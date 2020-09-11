@@ -1,6 +1,6 @@
 [package]
 name = "broadcast-channel"
-version = "1.0.0"
+version = "0.0.0"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/yoshuawuyts/broadcast-channel"
 documentation = "https://docs.rs/broadcast-channel"
@@ -10,6 +10,7 @@ edition = "2018"
 keywords = []
 categories = []
 authors = [
+    "Stjepan Glavina <stjepang@gmail.com>",
     "Yoshua Wuyts <yoshuawuyts@gmail.com>"
 ]
 
