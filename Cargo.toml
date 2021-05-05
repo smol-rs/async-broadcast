@@ -22,3 +22,5 @@ event-listener = "2.5.1"
 futures-core = "0.3.14"
 
 [dev-dependencies]
+futures-util = "0.3.14"
+pollster = "0.2.4"
