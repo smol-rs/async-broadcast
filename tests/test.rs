@@ -2,7 +2,7 @@ use futures_util::stream::StreamExt;
 use async_broadcast::*;
 
 #[test]
-fn sync() {
+fn basic_sync() {
     let (s, mut r1) = broadcast(10);
     let mut r2 = r1.clone();
 
@@ -18,7 +18,7 @@ fn sync() {
 }
 
 #[test]
-fn r#async() {
+fn basic_async() {
     pollster::block_on(async {
         let (s, mut r1) = broadcast(10);
         let mut r2 = r1.clone();
