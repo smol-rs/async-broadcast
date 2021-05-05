@@ -1,9 +1,9 @@
 [package]
-name = "broadcast-channel"
+name = "async-broadcast"
 version = "0.0.0"
 license = "MIT OR Apache-2.0"
-repository = "https://github.com/yoshuawuyts/broadcast-channel"
-documentation = "https://docs.rs/broadcast-channel"
+repository = "https://github.com/smol-rs/async-broadcast"
+documentation = "https://docs.rs/async-broadcast"
 description = "Async broadcast channels"
 readme = "README.md"
 edition = "2018"

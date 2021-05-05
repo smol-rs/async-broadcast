@@ -1,4 +1,4 @@
-<h1 align="center">broadcast-channel</h1>
+<h1 align="center">async-broadcast</h1>
 <div align="center">
   <strong>
     Async broadcast channels
@@ -9,17 +9,17 @@
 
 <div align="center">
   <!-- Crates version -->
-  <a href="https://crates.io/crates/broadcast-channel">
-    <img src="https://img.shields.io/crates/v/broadcast-channel.svg?style=flat-square"
+  <a href="https://crates.io/crates/async-broadcast">
+    <img src="https://img.shields.io/crates/v/async-broadcast.svg?style=flat-square"
     alt="Crates.io version" />
   </a>
   <!-- Downloads -->
-  <a href="https://crates.io/crates/broadcast-channel">
-    <img src="https://img.shields.io/crates/d/broadcast-channel.svg?style=flat-square"
+  <a href="https://crates.io/crates/async-broadcast">
+    <img src="https://img.shields.io/crates/d/async-broadcast.svg?style=flat-square"
       alt="Download" />
   </a>
   <!-- docs.rs docs -->
-  <a href="https://docs.rs/broadcast-channel">
+  <a href="https://docs.rs/async-broadcast">
     <img src="https://img.shields.io/badge/docs-latest-blue.svg?style=flat-square"
       alt="docs.rs docs" />
   </a>
@@ -27,15 +27,15 @@
 
 <div align="center">
   <h3>
-    <a href="https://docs.rs/broadcast-channel">
+    <a href="https://docs.rs/async-broadcast">
       API Docs
     </a>
     <span> | </span>
-    <a href="https://github.com/yoshuawuyts/broadcast-channel/releases">
+    <a href="https://github.com/smol-rs/async-broadcast/releases">
       Releases
     </a>
     <span> | </span>
-    <a href="https://github.com/yoshuawuyts/broadcast-channel/blob/master.github/CONTRIBUTING.md">
+    <a href="https://github.com/smol-rs/async-broadcast/blob/master.github/CONTRIBUTING.md">
       Contributing
     </a>
   </h3>
@@ -43,7 +43,7 @@
 
 ## Installation
 ```sh
-$ cargo add broadcast-channel
+$ cargo add async-broadcast
 ```
 
 ## Safety
@@ -57,9 +57,9 @@ look at some of these issues:
 - [Issues labeled "good first issue"][good-first-issue]
 - [Issues labeled "help wanted"][help-wanted]
 
-[contributing]: https://github.com/yoshuawuyts/broadcast-channel/blob/master.github/CONTRIBUTING.md
-[good-first-issue]: https://github.com/yoshuawuyts/broadcast-channel/labels/good%20first%20issue
-[help-wanted]: https://github.com/yoshuawuyts/broadcast-channel/labels/help%20wanted
+[contributing]: https://github.com/smol-rs/async-broadcast/blob/master.github/CONTRIBUTING.md
+[good-first-issue]: https://github.com/smol-rs/async-broadcast/labels/good%20first%20issue
+[help-wanted]: https://github.com/smol-rs/async-broadcast/labels/help%20wanted
 
 ## License
 
