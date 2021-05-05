@@ -11,7 +11,8 @@ keywords = []
 categories = []
 authors = [
     "Stjepan Glavina <stjepang@gmail.com>",
-    "Yoshua Wuyts <yoshuawuyts@gmail.com>"
+    "Yoshua Wuyts <yoshuawuyts@gmail.com>",
+    "Zeeshan Ali <zeeshanak@gnome.org>",
 ]
 
 [features]
