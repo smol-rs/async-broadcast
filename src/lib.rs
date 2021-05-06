@@ -26,7 +26,9 @@ pub fn broadcast<T>(cap: usize) -> (Sender<T>, Receiver<T>) {
     let inner = Arc::new(Mutex::new(Inner {
         queue: VecDeque::with_capacity(cap),
         receiver_count: 1,
+        sender_count: 1,
         send_count: 0,
+        is_closed: false,
         send_ops: Event::new(),
         recv_ops: Event::new(),
     }));
@@ -46,7 +48,10 @@ pub fn broadcast<T>(cap: usize) -> (Sender<T>, Receiver<T>) {
 struct Inner<T> {
     queue: VecDeque<(T, usize)>,
     receiver_count: usize,
+    sender_count: usize,
     send_count: usize,
+
+    is_closed: bool,
 
     /// Send operations waiting while the channel is full.
     send_ops: Event,
@@ -55,8 +60,26 @@ struct Inner<T> {
     recv_ops: Event,
 }
 
+impl<T> Inner<T> {
+    /// Closes the channel and notifies all waiting operations.
+    ///
+    /// Returns `true` if this call has closed the channel and it was not closed already.
+    fn close(&mut self) -> bool {
+        if self.is_closed {
+            return false;
+        }
+
+        self.is_closed = true;
+        // Notify all waiting senders and receivers.
+        self.send_ops.notify(usize::MAX);
+        self.recv_ops.notify(usize::MAX);
+
+        true
+    }
+}
+
 // The sending side of a channel.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct Sender<T> {
     inner: Arc<Mutex<Inner<T>>>,
     capacity: usize,
@@ -79,7 +102,9 @@ impl<T: Clone> Sender<T> {
 
     pub fn try_broadcast(&self, msg: T) -> Result<(), TrySendError<T>> {
         let mut inner = self.inner.lock().unwrap();
-        if inner.queue.len() == self.capacity {
+        if inner.is_closed {
+            return Err(TrySendError::Closed(msg));
+        } else if inner.queue.len() == self.capacity {
             return Err(TrySendError::Full(msg));
         }
         let receiver_count = inner.receiver_count;
@@ -90,6 +115,52 @@ impl<T: Clone> Sender<T> {
         inner.recv_ops.notify(usize::MAX);
 
         Ok(())
+    }
+
+    /// Closes the channel.
+    ///
+    /// Returns `true` if this call has closed the channel and it was not closed already.
+    ///
+    /// The remaining messages can still be received.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # futures_lite::future::block_on(async {
+    /// use async_broadcast::{broadcast, RecvError};
+    ///
+    /// let (s, mut r) = broadcast(1);
+    /// s.broadcast(1).await.unwrap();
+    /// assert!(s.close());
+    ///
+    /// assert_eq!(r.recv().await.unwrap(), 1);
+    /// assert_eq!(r.recv().await, Err(RecvError));
+    /// # });
+    /// ```
+    pub fn close(&self) -> bool {
+        self.inner.lock().unwrap().close()
+    }
+}
+
+impl<T> Drop for Sender<T> {
+    fn drop(&mut self) {
+        let mut inner = self.inner.lock().unwrap();
+        inner.sender_count -= 1;
+
+        if inner.sender_count == 0 {
+            inner.close();
+        }
+    }
+}
+
+impl<T> Clone for Sender<T> {
+    fn clone(&self) -> Self {
+        self.inner.lock().unwrap().sender_count += 1;
+
+        Sender {
+            inner: self.inner.clone(),
+            capacity: self.capacity,
+        }
     }
 }
 
@@ -113,7 +184,11 @@ impl<T: Clone> Receiver<T> {
         let mut inner = self.inner.lock().unwrap();
         let msg_count = inner.send_count - self.recv_count;
         if msg_count == 0 {
-            return Err(TryRecvError::Empty);
+            if inner.is_closed {
+                return Err(TryRecvError::Closed);
+            } else {
+                return Err(TryRecvError::Empty);
+            }
         }
         let len = dbg!(inner.queue.len());
         let msg = inner.queue[len - msg_count].0.clone();
@@ -127,6 +202,30 @@ impl<T: Clone> Receiver<T> {
         }
         self.recv_count += 1;
         Ok(msg)
+    }
+
+    /// Closes the channel.
+    ///
+    /// Returns `true` if this call has closed the channel and it was not closed already.
+    ///
+    /// The remaining messages can still be received.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # futures_lite::future::block_on(async {
+    /// use async_broadcast::{broadcast, RecvError};
+    ///
+    /// let (s, mut r) = broadcast(1);
+    /// s.broadcast(1).await.unwrap();
+    /// assert!(s.close());
+    ///
+    /// assert_eq!(r.recv().await.unwrap(), 1);
+    /// assert_eq!(r.recv().await, Err(RecvError));
+    /// # });
+    /// ```
+    pub fn close(&self) -> bool {
+        self.inner.lock().unwrap().close()
     }
 }
 
@@ -153,6 +252,10 @@ impl<T> Drop for Receiver<T> {
             inner.send_ops.notify(1);
         }
         inner.receiver_count -= 1;
+
+        if inner.receiver_count == 0 {
+            inner.close();
+        }
     }
 }
 
