@@ -5,7 +5,7 @@ use futures_util::stream::StreamExt;
 use async_broadcast::*;
 
 use easy_parallel::Parallel;
-use pollster::block_on;
+use futures_lite::future::block_on;
 
 fn ms(ms: u64) -> Duration {
     Duration::from_millis(ms)
