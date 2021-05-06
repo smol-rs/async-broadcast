@@ -139,8 +139,18 @@ impl<T> Drop for Receiver<T> {
         for i in dbg!(len) - dbg!(msg_count)..len {
             inner.queue[i].1 -= 1;
         }
+        let mut poped = false;
         while let Some((_, 0)) = inner.queue.front() {
             inner.queue.pop_front();
+            if !poped {
+                poped = true;
+            }
+        }
+
+        if poped {
+            // Notify 1 awaiting senders that there is now room. If there is still room in the
+            // queue, the notified operation will notify another awaiting sender.
+            inner.send_ops.notify(1);
         }
         inner.receiver_count -= 1;
     }
