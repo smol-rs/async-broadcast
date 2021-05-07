@@ -113,6 +113,7 @@ fn parallel_async() {
             assert_eq!(r2.try_recv(), Err(TryRecvError::Empty));
             sender_sync_send.send(()).unwrap();
 
+            receiver_sync_recv.recv().unwrap();
             assert_eq!(r1.next().await.unwrap(), 7);
             assert_eq!(r2.next().await.unwrap(), 7);
             assert_eq!(r1.recv().await.unwrap(), 8);
