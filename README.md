@@ -37,7 +37,7 @@ let mut r2 = r1.clone();
 
 Parallel::new()
     .add(move || block_on(async move {
-        sleep(Duration::from_millis(10));
+        sleep(Duration::from_millis(50));
         s1.broadcast(7).await.unwrap();
         s2.broadcast(8).await.unwrap();
 
@@ -45,7 +45,7 @@ Parallel::new()
         assert!(s1.try_broadcast(10).unwrap_err().is_full());
         s1.broadcast(9).await.unwrap();
         s2.broadcast(10).await.unwrap();
-        sleep(Duration::from_millis(10));
+        sleep(Duration::from_millis(50));
     }))
     .add(move || block_on(async move {
         assert_eq!(r1.try_recv(), Err(TryRecvError::Empty));
@@ -57,7 +57,7 @@ Parallel::new()
         assert_eq!(r1.recv().await.unwrap(), 8);
         assert_eq!(r2.recv().await.unwrap(), 8);
 
-        sleep(Duration::from_millis(10));
+        sleep(Duration::from_millis(50));
 
         assert_eq!(r1.next().await.unwrap(), 9);
         assert_eq!(r2.next().await.unwrap(), 9);
@@ -65,7 +65,7 @@ Parallel::new()
         assert_eq!(r1.recv().await.unwrap(), 10);
         assert_eq!(r2.recv().await.unwrap(), 10);
 
-        sleep(Duration::from_millis(10));
+        sleep(Duration::from_millis(50));
         assert_eq!(r1.recv().await, Err(RecvError));
         assert_eq!(r2.recv().await, Err(RecvError));
     }))

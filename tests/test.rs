@@ -54,7 +54,7 @@ fn parallel() {
 
     Parallel::new()
         .add(move || {
-            sleep(ms(10));
+            sleep(ms(50));
             s1.try_broadcast(7).unwrap();
             s2.try_broadcast(8).unwrap();
 
@@ -64,12 +64,12 @@ fn parallel() {
         .add(move || {
             assert_eq!(r1.try_recv(), Err(TryRecvError::Empty));
             assert_eq!(r2.try_recv(), Err(TryRecvError::Empty));
-            sleep(ms(15));
+            sleep(ms(50));
             assert_eq!(r1.try_recv().unwrap(), 7);
             assert_eq!(r1.try_recv().unwrap(), 8);
             assert_eq!(r2.try_recv().unwrap(), 7);
             assert_eq!(r2.try_recv().unwrap(), 8);
-            sleep(ms(5));
+            sleep(ms(50));
             assert_eq!(r1.try_recv(), Err(TryRecvError::Closed));
             assert_eq!(r2.try_recv(), Err(TryRecvError::Closed));
         })
@@ -84,7 +84,7 @@ fn parallel_async() {
 
     Parallel::new()
         .add(move || block_on(async move {
-            sleep(ms(10));
+            sleep(ms(50));
             s1.broadcast(7).await.unwrap();
             s2.broadcast(8).await.unwrap();
 
@@ -92,7 +92,7 @@ fn parallel_async() {
             assert!(s1.try_broadcast(10).unwrap_err().is_full());
             s1.broadcast(9).await.unwrap();
             s2.broadcast(10).await.unwrap();
-            sleep(ms(10));
+            sleep(ms(50));
         }))
         .add(move || block_on(async move {
             assert_eq!(r1.try_recv(), Err(TryRecvError::Empty));
@@ -104,14 +104,14 @@ fn parallel_async() {
             assert_eq!(r1.recv().await.unwrap(), 8);
             assert_eq!(r2.recv().await.unwrap(), 8);
 
-            sleep(ms(10));
+            sleep(ms(50));
             assert_eq!(r1.next().await.unwrap(), 9);
             assert_eq!(r2.next().await.unwrap(), 9);
 
             assert_eq!(r1.recv().await.unwrap(), 10);
             assert_eq!(r2.recv().await.unwrap(), 10);
 
-            sleep(ms(10));
+            sleep(ms(50));
             assert_eq!(r1.recv().await, Err(RecvError));
             assert_eq!(r2.recv().await, Err(RecvError));
         }))
