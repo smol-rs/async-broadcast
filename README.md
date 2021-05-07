@@ -57,6 +57,8 @@ Parallel::new()
         assert_eq!(r1.recv().await.unwrap(), 8);
         assert_eq!(r2.recv().await.unwrap(), 8);
 
+        sleep(Duration::from_millis(10));
+
         assert_eq!(r1.next().await.unwrap(), 9);
         assert_eq!(r2.next().await.unwrap(), 9);
 
