@@ -25,51 +25,39 @@ The channel can also be closed manually by calling `Sender::close()` or
 ## Examples
 
 ```rust
-use std::{thread::sleep, time::Duration};
-
-use async_broadcast::{broadcast, Sender, Receiver, RecvError, TryRecvError};
-use easy_parallel::Parallel;
+use async_broadcast::{broadcast, TryRecvError};
 use futures_lite::{future::block_on, stream::StreamExt};
 
-let (s1, mut r1) = broadcast(2);
-let s2 = s1.clone();
-let mut r2 = r1.clone();
+block_on(async move {
+    let (s1, mut r1) = broadcast(2);
+    let s2 = s1.clone();
+    let mut r2 = r1.clone();
 
-Parallel::new()
-    .add(move || block_on(async move {
-        sleep(Duration::from_millis(50));
-        s1.broadcast(7).await.unwrap();
-        s2.broadcast(8).await.unwrap();
+    // Send 2 messages from two different senders.
+    s1.broadcast(7).await.unwrap();
+    s2.broadcast(8).await.unwrap();
 
-        assert!(s2.try_broadcast(9).unwrap_err().is_full());
-        assert!(s1.try_broadcast(10).unwrap_err().is_full());
-        s1.broadcast(9).await.unwrap();
-        s2.broadcast(10).await.unwrap();
-        sleep(Duration::from_millis(50));
-    }))
-    .add(move || block_on(async move {
-        assert_eq!(r1.try_recv(), Err(TryRecvError::Empty));
-        assert_eq!(r2.try_recv(), Err(TryRecvError::Empty));
+    // Channel is now at capacity so sending more messages will result in an error.
+    assert!(s2.try_broadcast(9).unwrap_err().is_full());
+    assert!(s1.try_broadcast(10).unwrap_err().is_full());
 
-        assert_eq!(r1.next().await.unwrap(), 7);
-        assert_eq!(r2.next().await.unwrap(), 7);
+    // We can use `recv` method of the `Stream` implementation to receive messages.
+    assert_eq!(r1.next().await.unwrap(), 7);
+    assert_eq!(r1.recv().await.unwrap(), 8);
+    assert_eq!(r2.next().await.unwrap(), 7);
+    assert_eq!(r2.recv().await.unwrap(), 8);
 
-        assert_eq!(r1.recv().await.unwrap(), 8);
-        assert_eq!(r2.recv().await.unwrap(), 8);
+    // All receiver got all messages so channel is now empty.
+    assert_eq!(r1.try_recv(), Err(TryRecvError::Empty));
+    assert_eq!(r2.try_recv(), Err(TryRecvError::Empty));
 
-        sleep(Duration::from_millis(50));
+    // Drop both senders, which closes the channel.
+    drop(s1);
+    drop(s2);
 
-        assert_eq!(r1.next().await.unwrap(), 9);
-        assert_eq!(r2.next().await.unwrap(), 9);
-
-        assert_eq!(r1.recv().await.unwrap(), 10);
-        assert_eq!(r2.recv().await.unwrap(), 10);
-
-        sleep(Duration::from_millis(50));
-        assert_eq!(r1.recv().await, Err(RecvError));
-        assert_eq!(r2.recv().await, Err(RecvError));
-    }))
-    .run();
+    assert_eq!(r1.try_recv(), Err(TryRecvError::Closed));
+    assert_eq!(r2.try_recv(), Err(TryRecvError::Closed));
+})
 ```
 
 ## Safety
