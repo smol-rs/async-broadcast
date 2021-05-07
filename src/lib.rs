@@ -323,6 +323,14 @@ impl<T: Clone> Stream for Receiver<T> {
     }
 }
 
+impl<T: Clone> futures_core::stream::FusedStream for Receiver<T> {
+    fn is_terminated(&self) -> bool {
+        let inner = self.inner.lock().unwrap();
+
+        inner.is_closed && inner.queue.is_empty()
+    }
+}
+
 /// An error returned from [`Sender::send()`].
 ///
 /// Received because the channel is closed.
