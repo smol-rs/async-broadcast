@@ -36,6 +36,7 @@
 //!         assert!(s1.try_broadcast(10).unwrap_err().is_full());
 //!         s1.broadcast(9).await.unwrap();
 //!         s2.broadcast(10).await.unwrap();
+//!         sleep(Duration::from_millis(10));
 //!     }))
 //!     .add(move || block_on(async move {
 //!         assert_eq!(r1.try_recv(), Err(TryRecvError::Empty));
