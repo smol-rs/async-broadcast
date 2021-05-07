@@ -1,9 +1,63 @@
-//! Async broadcast channels
+//! Async broadcast channel
 //!
-//! # Examples
+//! An async multi-producer multi-consumer broadcast channel, where each consumer gets a clone of every
+//! message sent on the channel. For obvious reasons, the channel can only be used to broadcast types
+//! that implement [`Clone`].
 //!
-//! ```
-//! // tbi
+//! A channel has the `Sender` and `Receiver` side. Both sides are cloneable and can be shared
+//! among multiple threads.
+//!
+//! When all `Sender`s or all `Receiver`s are dropped, the channel becomes closed. When a channel is
+//! closed, no more messages can be sent, but remaining messages can still be received.
+//!
+//! The channel can also be closed manually by calling `Sender::close()` or
+//! `Receiver::close()`.
+//!
+//! ## Examples
+//!
+//! ```rust
+//! use std::{thread::sleep, time::Duration};
+//!
+//! use async_broadcast::{broadcast, Sender, Receiver, RecvError, TryRecvError};
+//! use easy_parallel::Parallel;
+//! use futures_lite::{future::block_on, stream::StreamExt};
+//!
+//! let (s1, mut r1) = broadcast(2);
+//! let s2 = s1.clone();
+//! let mut r2 = r1.clone();
+//!
+//! Parallel::new()
+//!     .add(move || block_on(async move {
+//!         sleep(Duration::from_millis(10));
+//!         s1.broadcast(7).await.unwrap();
+//!         s2.broadcast(8).await.unwrap();
+//!
+//!         assert!(s2.try_broadcast(9).unwrap_err().is_full());
+//!         assert!(s1.try_broadcast(10).unwrap_err().is_full());
+//!         s1.broadcast(9).await.unwrap();
+//!         s2.broadcast(10).await.unwrap();
+//!     }))
+//!     .add(move || block_on(async move {
+//!         assert_eq!(r1.try_recv(), Err(TryRecvError::Empty));
+//!         assert_eq!(r2.try_recv(), Err(TryRecvError::Empty));
+//!
+//!         assert_eq!(r1.next().await.unwrap(), 7);
+//!         assert_eq!(r2.next().await.unwrap(), 7);
+//!
+//!         assert_eq!(r1.recv().await.unwrap(), 8);
+//!         assert_eq!(r2.recv().await.unwrap(), 8);
+//!
+//!         assert_eq!(r1.next().await.unwrap(), 9);
+//!         assert_eq!(r2.next().await.unwrap(), 9);
+//!
+//!         assert_eq!(r1.recv().await.unwrap(), 10);
+//!         assert_eq!(r2.recv().await.unwrap(), 10);
+//!
+//!         sleep(Duration::from_millis(10));
+//!         assert_eq!(r1.recv().await, Err(RecvError));
+//!         assert_eq!(r2.recv().await, Err(RecvError));
+//!     }))
+//!     .run();
 //! ```
 
 #![forbid(unsafe_code, future_incompatible, rust_2018_idioms)]
