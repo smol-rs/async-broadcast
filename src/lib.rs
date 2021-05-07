@@ -40,6 +40,7 @@ pub fn broadcast<T>(cap: usize) -> (Sender<T>, Receiver<T>) {
         inner: inner,
         capacity: cap,
         recv_count: 0,
+        listener: None,
     };
     (s, r)
 }
@@ -170,6 +171,9 @@ pub struct Receiver<T> {
     inner: Arc<Mutex<Inner<T>>>,
     capacity: usize,
     recv_count: usize,
+
+    /// Listens for a send or close event to unblock this stream.
+    listener: Option<EventListener>,
 }
 
 impl<T: Clone> Receiver<T> {
@@ -267,6 +271,7 @@ impl<T> Clone for Receiver<T> {
             inner: self.inner.clone(),
             capacity: self.capacity,
             recv_count: inner.send_count,
+            listener: None,
         }
     }
 }
@@ -275,13 +280,45 @@ impl<T: Clone> Stream for Receiver<T> {
     type Item = T;
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        let mut recv = self.recv();
-        let pin = Pin::new(&mut recv);
+        loop {
+            // If this stream is listening for events, first wait for a notification.
+            if let Some(listener) = self.listener.as_mut() {
+                futures_core::ready!(Pin::new(listener).poll(cx));
+                self.listener = None;
+            }
 
-        match pin.poll(cx) {
-            Poll::Ready(Ok(msg)) => Poll::Ready(Some(msg)),
-            Poll::Ready(Err(_)) => Poll::Ready(None),
-            Poll::Pending => Poll::Pending,
+            loop {
+                // Attempt to receive a message.
+                match self.try_recv() {
+                    Ok(msg) => {
+                        // The stream is not blocked on an event - drop the listener.
+                        self.listener = None;
+                        return Poll::Ready(Some(msg));
+                    }
+                    Err(TryRecvError::Closed) => {
+                        // The stream is not blocked on an event - drop the listener.
+                        self.listener = None;
+                        return Poll::Ready(None);
+                    }
+                    Err(TryRecvError::Empty) => {}
+                }
+
+                // Receiving failed - now start listening for notifications or wait for one.
+                match self.listener.as_mut() {
+                    None => {
+                        // Start listening and then try receiving again.
+                        self.listener = {
+                            let inner = self.inner.lock().unwrap();
+
+                            Some(inner.recv_ops.listen())
+                        };
+                    }
+                    Some(_) => {
+                        // Go back to the outer loop to poll the listener.
+                        break;
+                    }
+                }
+            }
         }
     }
 }
