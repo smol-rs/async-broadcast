@@ -269,6 +269,20 @@ impl<T: Clone> Receiver<T> {
         Ok(msg)
     }
 
+    /// Returns the channel capacity.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use async_broadcast::broadcast;
+    ///
+    /// let (s, r) = broadcast::<i32>(5);
+    /// assert_eq!(r.capacity(), 5);
+    /// ```
+    pub fn capacity(&self) -> usize {
+        self.capacity
+    }
+
     /// Closes the channel.
     ///
     /// Returns `true` if this call has closed the channel and it was not closed already.
