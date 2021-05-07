@@ -84,6 +84,31 @@ use event_listener::{Event, EventListener};
 use futures_core::stream::Stream;
 
 /// Create a new broadcast channel.
+///
+/// The created channel has space to hold at most `cap` messages at a time.
+///
+/// # Panics
+///
+/// Capacity must be a positive number. If `cap` is zero, this function will panic.
+///
+/// # Examples
+///
+/// ```
+/// # futures_lite::future::block_on(async {
+/// use async_broadcast::{broadcast, TryRecvError, TrySendError};
+///
+/// let (s, mut r1) = broadcast(1);
+/// let mut r2 = r1.clone();
+///
+/// assert_eq!(s.broadcast(10).await, Ok(()));
+/// assert_eq!(s.try_broadcast(20), Err(TrySendError::Full(20)));
+///
+/// assert_eq!(r1.recv().await, Ok(10));
+/// assert_eq!(r2.recv().await, Ok(10));
+/// assert_eq!(r1.try_recv(), Err(TryRecvError::Empty));
+/// assert_eq!(r2.try_recv(), Err(TryRecvError::Empty));
+/// # });
+/// ```
 pub fn broadcast<T>(cap: usize) -> (Sender<T>, Receiver<T>) {
     assert!(cap > 0, "capacity cannot be zero");
 
@@ -143,7 +168,12 @@ impl<T> Inner<T> {
     }
 }
 
-// The sending side of a channel.
+/// The sending side of the broadcast channel.
+///
+/// Senders can be cloned and shared among threads. When all senders associated with a channel are
+/// dropped, the channel becomes closed.
+///
+/// The channel can also be closed manually by calling [`Sender::close()`].
 #[derive(Debug)]
 pub struct Sender<T> {
     inner: Arc<Mutex<Inner<T>>>,
@@ -151,12 +181,41 @@ pub struct Sender<T> {
 }
 
 impl<T> Sender<T> {
+    /// Returns the channel capacity.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use async_broadcast::broadcast;
+    ///
+    /// let (s, r) = broadcast::<i32>(5);
+    /// assert_eq!(s.capacity(), 5);
+    /// ```
     pub fn capacity(&self) -> usize {
         self.capacity
     }
 }
 
 impl<T: Clone> Sender<T> {
+    /// Broadcasts a message on the channel.
+    ///
+    /// If the channel is full, this method waits until there is space for a message.
+    ///
+    /// If the channel is closed, this method returns an error.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # futures_lite::future::block_on(async {
+    /// use async_broadcast::{broadcast, SendError};
+    ///
+    /// let (s, r) = broadcast(1);
+    ///
+    /// assert_eq!(s.broadcast(1).await, Ok(()));
+    /// drop(r);
+    /// assert_eq!(s.broadcast(2).await, Err(SendError(2)));
+    /// # });
+    /// ```
     pub fn broadcast(&self, msg: T) -> Send<'_, T> {
         Send {
             sender: self,
@@ -165,6 +224,23 @@ impl<T: Clone> Sender<T> {
         }
     }
 
+    /// Attempts to broadcast a message on the channel.
+    ///
+    /// If the channel is full or closed, this method returns an error.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use async_broadcast::{broadcast, TrySendError};
+    ///
+    /// let (s, r) = broadcast(1);
+    ///
+    /// assert_eq!(s.try_broadcast(1), Ok(()));
+    /// assert_eq!(s.try_broadcast(2), Err(TrySendError::Full(2)));
+    ///
+    /// drop(r);
+    /// assert_eq!(s.try_broadcast(3), Err(TrySendError::Closed(3)));
+    /// ```
     pub fn try_broadcast(&self, msg: T) -> Result<(), TrySendError<T>> {
         let mut inner = self.inner.lock().unwrap();
         if inner.is_closed {
@@ -241,6 +317,31 @@ pub struct Receiver<T> {
 }
 
 impl<T: Clone> Receiver<T> {
+    /// Receives a message from the channel.
+    ///
+    /// If the channel is empty, this method waits until there is a message.
+    ///
+    /// If the channel is closed, this method receives a message or returns an error if there are
+    /// no more messages.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # futures_lite::future::block_on(async {
+    /// use async_broadcast::{broadcast, RecvError};
+    ///
+    /// let (s, mut r1) = broadcast(1);
+    /// let mut r2 = r1.clone();
+    ///
+    /// assert_eq!(s.broadcast(1).await, Ok(()));
+    /// drop(s);
+    ///
+    /// assert_eq!(r1.recv().await, Ok(1));
+    /// assert_eq!(r1.recv().await, Err(RecvError));
+    /// assert_eq!(r2.recv().await, Ok(1));
+    /// assert_eq!(r2.recv().await, Err(RecvError));
+    /// # });
+    /// ```
     pub fn recv(&mut self) -> Recv<'_, T> {
         Recv {
             receiver: self,
@@ -248,6 +349,30 @@ impl<T: Clone> Receiver<T> {
         }
     }
 
+    /// Attempts to receive a message from the channel.
+    ///
+    /// If the channel is empty or closed, this method returns an error.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # futures_lite::future::block_on(async {
+    /// use async_broadcast::{broadcast, TryRecvError};
+    ///
+    /// let (s, mut r1) = broadcast(1);
+    /// let mut r2 = r1.clone();
+    /// assert_eq!(s.broadcast(1).await, Ok(()));
+    ///
+    /// assert_eq!(r1.try_recv(), Ok(1));
+    /// assert_eq!(r1.try_recv(), Err(TryRecvError::Empty));
+    /// assert_eq!(r2.try_recv(), Ok(1));
+    /// assert_eq!(r2.try_recv(), Err(TryRecvError::Empty));
+    ///
+    /// drop(s);
+    /// assert_eq!(r1.try_recv(), Err(TryRecvError::Closed));
+    /// assert_eq!(r2.try_recv(), Err(TryRecvError::Closed));
+    /// # });
+    /// ```
     pub fn try_recv(&mut self) -> Result<T, TryRecvError> {
         let mut inner = self.inner.lock().unwrap();
         let msg_count = inner.send_count - self.recv_count;
