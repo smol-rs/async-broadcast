@@ -82,7 +82,7 @@ fn parallel_async() {
         .add(move || block_on(async move {
             assert_eq!(r1.try_recv(), Err(TryRecvError::Empty));
             assert_eq!(r2.try_recv(), Err(TryRecvError::Empty));
-            assert_eq!(r1.recv().await.unwrap(), 7);
+            assert_eq!(r1.next().await.unwrap(), 7);
             assert_eq!(r2.recv().await.unwrap(), 7);
             assert_eq!(r1.recv().await, Err(RecvError));
             assert_eq!(r2.recv().await, Err(RecvError));
