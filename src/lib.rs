@@ -419,7 +419,7 @@ impl<T> fmt::Display for SendError<T> {
     }
 }
 
-/// An error returned from [`Sender::try_send()`].
+/// An error returned from [`Sender::try_broadcast()`].
 #[derive(PartialEq, Eq, Clone, Copy)]
 pub enum TrySendError<T> {
     /// The channel is full but not closed.
