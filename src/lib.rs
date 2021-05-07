@@ -96,7 +96,7 @@ pub fn broadcast<T>(cap: usize) -> (Sender<T>, Receiver<T>) {
         capacity: cap,
     };
     let r = Receiver {
-        inner: inner,
+        inner,
         capacity: cap,
         recv_count: 0,
         listener: None,
