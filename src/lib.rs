@@ -409,7 +409,7 @@ impl<T: Clone> futures_core::stream::FusedStream for Receiver<T> {
     }
 }
 
-/// An error returned from [`Sender::send()`].
+/// An error returned from [`Sender::broadcast()`].
 ///
 /// Received because the channel is closed.
 #[derive(PartialEq, Eq, Clone, Copy)]
@@ -545,7 +545,7 @@ impl fmt::Display for TryRecvError {
     }
 }
 
-/// A future returned by [`Sender::send()`].
+/// A future returned by [`Sender::broadcast()`].
 #[derive(Debug)]
 #[must_use = "futures do nothing unless .awaited"]
 pub struct Send<'a, T> {
