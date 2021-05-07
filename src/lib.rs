@@ -4,14 +4,13 @@
 //! message sent on the channel. For obvious reasons, the channel can only be used to broadcast types
 //! that implement [`Clone`].
 //!
-//! A channel has the `Sender` and `Receiver` side. Both sides are cloneable and can be shared
+//! A channel has the [`Sender`] and [`Receiver`] side. Both sides are cloneable and can be shared
 //! among multiple threads.
 //!
 //! When all `Sender`s or all `Receiver`s are dropped, the channel becomes closed. When a channel is
 //! closed, no more messages can be sent, but remaining messages can still be received.
 //!
-//! The channel can also be closed manually by calling `Sender::close()` or
-//! `Receiver::close()`.
+//! The channel can also be closed manually by calling [`Sender::close()`] or [`Receiver::close()`].
 //!
 //! ## Examples
 //!
