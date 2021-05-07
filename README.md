@@ -1,49 +1,72 @@
-<h1 align="center">async-broadcast</h1>
-<div align="center">
-  <strong>
-    Async broadcast channels
-  </strong>
-</div>
+# async-broadcast
 
-<br />
+[![Build](https://github.com/smol-rs/async-broadcast/workflows/Build%20and%20test/badge.svg)](
+https://github.com/smol-rs/async-broadcast/actions)
+[![License](https://img.shields.io/badge/license-Apache--2.0_OR_MIT-blue.svg)](
+https://github.com/smol-rs/async-broadcast)
+[![Cargo](https://img.shields.io/crates/v/async-broadcast.svg)](
+https://crates.io/crates/async-broadcast)
+[![Documentation](https://docs.rs/async-broadcast/badge.svg)](
+https://docs.rs/async-broadcast)
 
-<div align="center">
-  <!-- Crates version -->
-  <a href="https://crates.io/crates/async-broadcast">
-    <img src="https://img.shields.io/crates/v/async-broadcast.svg?style=flat-square"
-    alt="Crates.io version" />
-  </a>
-  <!-- Downloads -->
-  <a href="https://crates.io/crates/async-broadcast">
-    <img src="https://img.shields.io/crates/d/async-broadcast.svg?style=flat-square"
-      alt="Download" />
-  </a>
-  <!-- docs.rs docs -->
-  <a href="https://docs.rs/async-broadcast">
-    <img src="https://img.shields.io/badge/docs-latest-blue.svg?style=flat-square"
-      alt="docs.rs docs" />
-  </a>
-</div>
+An async multi-producer multi-consumer broadcast channel, where each consumer gets a clone of every
+message sent on the channel. For obvious reasons, the channel can only be used to broadcast types
+that implement `Clone`.
 
-<div align="center">
-  <h3>
-    <a href="https://docs.rs/async-broadcast">
-      API Docs
-    </a>
-    <span> | </span>
-    <a href="https://github.com/smol-rs/async-broadcast/releases">
-      Releases
-    </a>
-    <span> | </span>
-    <a href="https://github.com/smol-rs/async-broadcast/blob/master/.github/CONTRIBUTING.md">
-      Contributing
-    </a>
-  </h3>
-</div>
+A channel has the `Sender` and `Receiver` side. Both sides are cloneable and can be shared
+among multiple threads.
 
-## Installation
-```sh
-$ cargo add async-broadcast
+When all `Sender`s or all `Receiver`s are dropped, the channel becomes closed. When a channel is
+closed, no more messages can be sent, but remaining messages can still be received.
+
+The channel can also be closed manually by calling `Sender::close()` or
+`Receiver::close()`.
+
+## Examples
+
+```rust
+use std::{thread::sleep, time::Duration};
+
+use async_broadcast::{broadcast, Sender, Receiver, RecvError, TryRecvError};
+use easy_parallel::Parallel;
+use futures_lite::{future::block_on, stream::StreamExt};
+
+let (s1, mut r1) = broadcast(2);
+let s2 = s1.clone();
+let mut r2 = r1.clone();
+
+Parallel::new()
+    .add(move || block_on(async move {
+        sleep(Duration::from_millis(10));
+        s1.broadcast(7).await.unwrap();
+        s2.broadcast(8).await.unwrap();
+
+        assert!(s2.try_broadcast(9).unwrap_err().is_full());
+        assert!(s1.try_broadcast(10).unwrap_err().is_full());
+        s1.broadcast(9).await.unwrap();
+        s2.broadcast(10).await.unwrap();
+    }))
+    .add(move || block_on(async move {
+        assert_eq!(r1.try_recv(), Err(TryRecvError::Empty));
+        assert_eq!(r2.try_recv(), Err(TryRecvError::Empty));
+
+        assert_eq!(r1.next().await.unwrap(), 7);
+        assert_eq!(r2.next().await.unwrap(), 7);
+
+        assert_eq!(r1.recv().await.unwrap(), 8);
+        assert_eq!(r2.recv().await.unwrap(), 8);
+
+        assert_eq!(r1.next().await.unwrap(), 9);
+        assert_eq!(r2.next().await.unwrap(), 9);
+
+        assert_eq!(r1.recv().await.unwrap(), 10);
+        assert_eq!(r2.recv().await.unwrap(), 10);
+
+        sleep(Duration::from_millis(10));
+        assert_eq!(r1.recv().await, Err(RecvError));
+        assert_eq!(r2.recv().await, Err(RecvError));
+    }))
+    .run();
 ```
 
 ## Safety
