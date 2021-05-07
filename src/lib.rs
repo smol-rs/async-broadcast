@@ -194,10 +194,10 @@ impl<T: Clone> Receiver<T> {
                 return Err(TryRecvError::Empty);
             }
         }
-        let len = dbg!(inner.queue.len());
+        let len = inner.queue.len();
         let msg = inner.queue[len - msg_count].0.clone();
         inner.queue[len - msg_count].1 -= 1;
-        if dbg!(inner.queue[len - msg_count].1) == 0 {
+        if inner.queue[len - msg_count].1 == 0 {
             inner.queue.pop_front();
 
             // Notify 1 awaiting senders that there is now room. If there is still room in the
@@ -236,10 +236,10 @@ impl<T: Clone> Receiver<T> {
 impl<T> Drop for Receiver<T> {
     fn drop(&mut self) {
         let mut inner = self.inner.lock().unwrap();
-        let msg_count = dbg!(inner.send_count) - dbg!(self.recv_count);
+        let msg_count = inner.send_count - self.recv_count;
         let len = inner.queue.len();
 
-        for i in dbg!(len) - dbg!(msg_count)..len {
+        for i in len - msg_count..len {
             inner.queue[i].1 -= 1;
         }
         let mut poped = false;
