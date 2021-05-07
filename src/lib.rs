@@ -82,6 +82,8 @@ use futures_core::stream::Stream;
 
 /// Create a new broadcast channel.
 pub fn broadcast<T>(cap: usize) -> (Sender<T>, Receiver<T>) {
+    assert!(cap > 0, "capacity cannot be zero");
+
     let inner = Arc::new(Mutex::new(Inner {
         queue: VecDeque::with_capacity(cap),
         receiver_count: 1,
