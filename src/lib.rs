@@ -10,6 +10,11 @@
 #![deny(missing_debug_implementations, nonstandard_style)]
 #![warn(missing_docs, missing_doc_code_examples, unreachable_pub)]
 
+#[cfg(doctest)]
+mod doctests {
+    doc_comment::doctest!("../README.md");
+}
+
 use std::collections::VecDeque;
 use std::error;
 use std::fmt;
