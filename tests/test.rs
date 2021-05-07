@@ -92,6 +92,7 @@ fn parallel_async() {
             assert!(s1.try_broadcast(10).unwrap_err().is_full());
             s1.broadcast(9).await.unwrap();
             s2.broadcast(10).await.unwrap();
+            sleep(ms(10));
         }))
         .add(move || block_on(async move {
             assert_eq!(r1.try_recv(), Err(TryRecvError::Empty));
@@ -103,6 +104,7 @@ fn parallel_async() {
             assert_eq!(r1.recv().await.unwrap(), 8);
             assert_eq!(r2.recv().await.unwrap(), 8);
 
+            sleep(ms(10));
             assert_eq!(r1.next().await.unwrap(), 9);
             assert_eq!(r2.next().await.unwrap(), 9);
 
