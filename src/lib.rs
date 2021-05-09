@@ -205,6 +205,121 @@ impl<T> Sender<T> {
     pub fn close(&self) -> bool {
         self.inner.lock().unwrap().close()
     }
+
+    /// Returns `true` if the channel is closed.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # futures_lite::future::block_on(async {
+    /// use async_broadcast::{broadcast, RecvError};
+    ///
+    /// let (s, r) = broadcast::<()>(1);
+    /// assert!(!s.is_closed());
+    ///
+    /// drop(r);
+    /// assert!(s.is_closed());
+    /// # });
+    /// ```
+    pub fn is_closed(&self) -> bool {
+        self.inner.lock().unwrap().is_closed
+    }
+
+    /// Returns `true` if the channel is empty.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # futures_lite::future::block_on(async {
+    /// use async_broadcast::broadcast;
+    ///
+    /// let (s, r) = broadcast(1);
+    ///
+    /// assert!(s.is_empty());
+    /// s.broadcast(1).await;
+    /// assert!(!s.is_empty());
+    /// # });
+    /// ```
+    pub fn is_empty(&self) -> bool {
+        self.inner.lock().unwrap().queue.is_empty()
+    }
+
+    /// Returns `true` if the channel is full.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # futures_lite::future::block_on(async {
+    /// use async_broadcast::broadcast;
+    ///
+    /// let (s, r) = broadcast(1);
+    ///
+    /// assert!(!s.is_full());
+    /// s.broadcast(1).await;
+    /// assert!(s.is_full());
+    /// # });
+    /// ```
+    pub fn is_full(&self) -> bool {
+        self.inner.lock().unwrap().queue.len() == self.capacity
+    }
+
+    /// Returns the number of messages in the channel.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # futures_lite::future::block_on(async {
+    /// use async_broadcast::broadcast;
+    ///
+    /// let (s, r) = broadcast(2);
+    /// assert_eq!(s.len(), 0);
+    ///
+    /// s.broadcast(1).await;
+    /// s.broadcast(2).await;
+    /// assert_eq!(s.len(), 2);
+    /// # });
+    /// ```
+    pub fn len(&self) -> usize {
+        self.inner.lock().unwrap().queue.len()
+    }
+
+    /// Returns the number of receivers for the channel.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # futures_lite::future::block_on(async {
+    /// use async_broadcast::broadcast;
+    ///
+    /// let (s, r) = broadcast::<()>(1);
+    /// assert_eq!(s.receiver_count(), 1);
+    ///
+    /// let r2 = r.clone();
+    /// assert_eq!(s.receiver_count(), 2);
+    /// # });
+    /// ```
+    pub fn receiver_count(&self) -> usize {
+        self.inner.lock().unwrap().receiver_count
+    }
+
+    /// Returns the number of senders for the channel.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # futures_lite::future::block_on(async {
+    /// use async_broadcast::broadcast;
+    ///
+    /// let (s, r) = broadcast::<()>(1);
+    /// assert_eq!(s.sender_count(), 1);
+    ///
+    /// let s2 = s.clone();
+    /// assert_eq!(s.sender_count(), 2);
+    /// # });
+    /// ```
+    pub fn sender_count(&self) -> usize {
+        self.inner.lock().unwrap().sender_count
+    }
 }
 
 impl<T: Clone> Sender<T> {
@@ -340,6 +455,121 @@ impl<T> Receiver<T> {
     /// ```
     pub fn close(&self) -> bool {
         self.inner.lock().unwrap().close()
+    }
+
+    /// Returns `true` if the channel is closed.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # futures_lite::future::block_on(async {
+    /// use async_broadcast::{broadcast, RecvError};
+    ///
+    /// let (s, r) = broadcast::<()>(1);
+    /// assert!(!s.is_closed());
+    ///
+    /// drop(r);
+    /// assert!(s.is_closed());
+    /// # });
+    /// ```
+    pub fn is_closed(&self) -> bool {
+        self.inner.lock().unwrap().is_closed
+    }
+
+    /// Returns `true` if the channel is empty.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # futures_lite::future::block_on(async {
+    /// use async_broadcast::broadcast;
+    ///
+    /// let (s, r) = broadcast(1);
+    ///
+    /// assert!(s.is_empty());
+    /// s.broadcast(1).await;
+    /// assert!(!s.is_empty());
+    /// # });
+    /// ```
+    pub fn is_empty(&self) -> bool {
+        self.inner.lock().unwrap().queue.is_empty()
+    }
+
+    /// Returns `true` if the channel is full.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # futures_lite::future::block_on(async {
+    /// use async_broadcast::broadcast;
+    ///
+    /// let (s, r) = broadcast(1);
+    ///
+    /// assert!(!s.is_full());
+    /// s.broadcast(1).await;
+    /// assert!(s.is_full());
+    /// # });
+    /// ```
+    pub fn is_full(&self) -> bool {
+        self.inner.lock().unwrap().queue.len() == self.capacity
+    }
+
+    /// Returns the number of messages in the channel.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # futures_lite::future::block_on(async {
+    /// use async_broadcast::broadcast;
+    ///
+    /// let (s, r) = broadcast(2);
+    /// assert_eq!(s.len(), 0);
+    ///
+    /// s.broadcast(1).await;
+    /// s.broadcast(2).await;
+    /// assert_eq!(s.len(), 2);
+    /// # });
+    /// ```
+    pub fn len(&self) -> usize {
+        self.inner.lock().unwrap().queue.len()
+    }
+
+    /// Returns the number of receivers for the channel.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # futures_lite::future::block_on(async {
+    /// use async_broadcast::broadcast;
+    ///
+    /// let (s, r) = broadcast::<()>(1);
+    /// assert_eq!(s.receiver_count(), 1);
+    ///
+    /// let r2 = r.clone();
+    /// assert_eq!(s.receiver_count(), 2);
+    /// # });
+    /// ```
+    pub fn receiver_count(&self) -> usize {
+        self.inner.lock().unwrap().receiver_count
+    }
+
+    /// Returns the number of senders for the channel.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # futures_lite::future::block_on(async {
+    /// use async_broadcast::broadcast;
+    ///
+    /// let (s, r) = broadcast::<()>(1);
+    /// assert_eq!(s.sender_count(), 1);
+    ///
+    /// let s2 = s.clone();
+    /// assert_eq!(s.sender_count(), 2);
+    /// # });
+    /// ```
+    pub fn sender_count(&self) -> usize {
+        self.inner.lock().unwrap().sender_count
     }
 }
 
