@@ -181,6 +181,30 @@ impl<T> Sender<T> {
     pub fn capacity(&self) -> usize {
         self.capacity
     }
+
+    /// Closes the channel.
+    ///
+    /// Returns `true` if this call has closed the channel and it was not closed already.
+    ///
+    /// The remaining messages can still be received.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # futures_lite::future::block_on(async {
+    /// use async_broadcast::{broadcast, RecvError};
+    ///
+    /// let (s, mut r) = broadcast(1);
+    /// s.broadcast(1).await.unwrap();
+    /// assert!(s.close());
+    ///
+    /// assert_eq!(r.recv().await.unwrap(), 1);
+    /// assert_eq!(r.recv().await, Err(RecvError));
+    /// # });
+    /// ```
+    pub fn close(&self) -> bool {
+        self.inner.lock().unwrap().close()
+    }
 }
 
 impl<T: Clone> Sender<T> {
@@ -244,30 +268,6 @@ impl<T: Clone> Sender<T> {
 
         Ok(())
     }
-
-    /// Closes the channel.
-    ///
-    /// Returns `true` if this call has closed the channel and it was not closed already.
-    ///
-    /// The remaining messages can still be received.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// # futures_lite::future::block_on(async {
-    /// use async_broadcast::{broadcast, RecvError};
-    ///
-    /// let (s, mut r) = broadcast(1);
-    /// s.broadcast(1).await.unwrap();
-    /// assert!(s.close());
-    ///
-    /// assert_eq!(r.recv().await.unwrap(), 1);
-    /// assert_eq!(r.recv().await, Err(RecvError));
-    /// # });
-    /// ```
-    pub fn close(&self) -> bool {
-        self.inner.lock().unwrap().close()
-    }
 }
 
 impl<T> Drop for Sender<T> {
@@ -301,6 +301,46 @@ pub struct Receiver<T> {
 
     /// Listens for a send or close event to unblock this stream.
     listener: Option<EventListener>,
+}
+
+impl<T> Receiver<T> {
+    /// Returns the channel capacity.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use async_broadcast::broadcast;
+    ///
+    /// let (s, r) = broadcast::<i32>(5);
+    /// assert_eq!(r.capacity(), 5);
+    /// ```
+    pub fn capacity(&self) -> usize {
+        self.capacity
+    }
+
+    /// Closes the channel.
+    ///
+    /// Returns `true` if this call has closed the channel and it was not closed already.
+    ///
+    /// The remaining messages can still be received.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # futures_lite::future::block_on(async {
+    /// use async_broadcast::{broadcast, RecvError};
+    ///
+    /// let (s, mut r) = broadcast(1);
+    /// s.broadcast(1).await.unwrap();
+    /// assert!(s.close());
+    ///
+    /// assert_eq!(r.recv().await.unwrap(), 1);
+    /// assert_eq!(r.recv().await, Err(RecvError));
+    /// # });
+    /// ```
+    pub fn close(&self) -> bool {
+        self.inner.lock().unwrap().close()
+    }
 }
 
 impl<T: Clone> Receiver<T> {
@@ -382,44 +422,6 @@ impl<T: Clone> Receiver<T> {
         }
         self.recv_count += 1;
         Ok(msg)
-    }
-
-    /// Returns the channel capacity.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use async_broadcast::broadcast;
-    ///
-    /// let (s, r) = broadcast::<i32>(5);
-    /// assert_eq!(r.capacity(), 5);
-    /// ```
-    pub fn capacity(&self) -> usize {
-        self.capacity
-    }
-
-    /// Closes the channel.
-    ///
-    /// Returns `true` if this call has closed the channel and it was not closed already.
-    ///
-    /// The remaining messages can still be received.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// # futures_lite::future::block_on(async {
-    /// use async_broadcast::{broadcast, RecvError};
-    ///
-    /// let (s, mut r) = broadcast(1);
-    /// s.broadcast(1).await.unwrap();
-    /// assert!(s.close());
-    ///
-    /// assert_eq!(r.recv().await.unwrap(), 1);
-    /// assert_eq!(r.recv().await, Err(RecvError));
-    /// # });
-    /// ```
-    pub fn close(&self) -> bool {
-        self.inner.lock().unwrap().close()
     }
 }
 
