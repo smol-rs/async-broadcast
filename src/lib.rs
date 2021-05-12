@@ -101,6 +101,7 @@ pub fn broadcast<T>(cap: usize) -> (Sender<T>, Receiver<T>) {
 
     let inner = Arc::new(Mutex::new(Inner {
         queue: VecDeque::with_capacity(cap),
+        capacity: cap,
         receiver_count: 1,
         sender_count: 1,
         send_count: 0,
@@ -110,12 +111,11 @@ pub fn broadcast<T>(cap: usize) -> (Sender<T>, Receiver<T>) {
     }));
     let s = Sender {
         inner: inner.clone(),
-        capacity: cap,
     };
     let r = Receiver {
         inner,
-        capacity: cap,
         recv_count: 0,
+        last_send_count: 0,
         listener: None,
     };
     (s, r)
@@ -124,6 +124,9 @@ pub fn broadcast<T>(cap: usize) -> (Sender<T>, Receiver<T>) {
 #[derive(Debug)]
 struct Inner<T> {
     queue: VecDeque<(T, usize)>,
+    // We assign the same capacity to the queue but that's just specifying the minimum capacity and
+    // the actual capacity could be anything. Hence the need to keep track of our own set capacity.
+    capacity: usize,
     receiver_count: usize,
     sender_count: usize,
     send_count: usize,
@@ -153,6 +156,25 @@ impl<T> Inner<T> {
 
         true
     }
+
+    /// Set the channel capacity.
+    ///
+    /// There are times when you need to change the channel's capacity after creating it. If the
+    /// `new_cap` is less than the number of messages in the channel, the oldest messages will be
+    /// dropped to shrink the channel.
+    fn set_capacity(&mut self, new_cap: usize) {
+        self.capacity = new_cap;
+        if new_cap > self.queue.capacity() {
+            let diff = new_cap - self.queue.capacity();
+            self.queue.reserve(diff);
+        }
+
+        // Ensure queue doesn't have more than `new_cap` messages.
+        while new_cap < self.queue.len() {
+            self.queue.pop_front();
+            self.send_count -= 1;
+        }
+    }
 }
 
 /// The sending side of the broadcast channel.
@@ -164,7 +186,6 @@ impl<T> Inner<T> {
 #[derive(Debug)]
 pub struct Sender<T> {
     inner: Arc<Mutex<Inner<T>>>,
-    capacity: usize,
 }
 
 impl<T> Sender<T> {
@@ -179,7 +200,40 @@ impl<T> Sender<T> {
     /// assert_eq!(s.capacity(), 5);
     /// ```
     pub fn capacity(&self) -> usize {
-        self.capacity
+        self.inner.lock().unwrap().capacity
+    }
+
+    /// Set the channel capacity.
+    ///
+    /// There are times when you need to change the channel's capacity after creating it. If the
+    /// `new_cap` is less than the number of messages in the channel, the oldest messages will be
+    /// dropped to shrink the channel.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use async_broadcast::{broadcast, TrySendError, TryRecvError};
+    ///
+    /// let (mut s, mut r) = broadcast::<i32>(3);
+    /// assert_eq!(s.capacity(), 3);
+    /// s.try_broadcast(1).unwrap();
+    /// s.try_broadcast(2).unwrap();
+    /// s.try_broadcast(3).unwrap();
+    ///
+    /// s.set_capacity(1);
+    /// assert_eq!(s.capacity(), 1);
+    /// assert_eq!(r.try_recv().unwrap(), 3);
+    /// assert_eq!(r.try_recv(), Err(TryRecvError::Empty));
+    /// s.try_broadcast(1).unwrap();
+    /// assert_eq!(s.try_broadcast(2), Err(TrySendError::Full(2)));
+    ///
+    /// s.set_capacity(2);
+    /// assert_eq!(s.capacity(), 2);
+    /// s.try_broadcast(2).unwrap();
+    /// assert_eq!(s.try_broadcast(2), Err(TrySendError::Full(2)));
+    /// ```
+    pub fn set_capacity(&mut self, new_cap: usize) {
+        self.inner.lock().unwrap().set_capacity(new_cap);
     }
 
     /// Closes the channel.
@@ -260,7 +314,9 @@ impl<T> Sender<T> {
     /// # });
     /// ```
     pub fn is_full(&self) -> bool {
-        self.inner.lock().unwrap().queue.len() == self.capacity
+        let inner = self.inner.lock().unwrap();
+
+        inner.queue.len() == inner.capacity
     }
 
     /// Returns the number of messages in the channel.
@@ -371,7 +427,7 @@ impl<T: Clone> Sender<T> {
         let mut inner = self.inner.lock().unwrap();
         if inner.is_closed {
             return Err(TrySendError::Closed(msg));
-        } else if inner.queue.len() == self.capacity {
+        } else if inner.queue.len() == inner.capacity {
             return Err(TrySendError::Full(msg));
         }
         let receiver_count = inner.receiver_count;
@@ -402,7 +458,6 @@ impl<T> Clone for Sender<T> {
 
         Sender {
             inner: self.inner.clone(),
-            capacity: self.capacity,
         }
     }
 }
@@ -411,8 +466,8 @@ impl<T> Clone for Sender<T> {
 #[derive(Debug)]
 pub struct Receiver<T> {
     inner: Arc<Mutex<Inner<T>>>,
-    capacity: usize,
     recv_count: usize,
+    last_send_count: usize,
 
     /// Listens for a send or close event to unblock this stream.
     listener: Option<EventListener>,
@@ -426,11 +481,44 @@ impl<T> Receiver<T> {
     /// ```
     /// use async_broadcast::broadcast;
     ///
-    /// let (s, r) = broadcast::<i32>(5);
+    /// let (_s, r) = broadcast::<i32>(5);
     /// assert_eq!(r.capacity(), 5);
     /// ```
     pub fn capacity(&self) -> usize {
-        self.capacity
+        self.inner.lock().unwrap().capacity
+    }
+
+    /// Set the channel capacity.
+    ///
+    /// There are times when you need to change the channel's capacity after creating it. If the
+    /// `new_cap` is less than the number of messages in the channel, the oldest messages will be
+    /// dropped to shrink the channel.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use async_broadcast::{broadcast, TrySendError, TryRecvError};
+    ///
+    /// let (s, mut r) = broadcast::<i32>(3);
+    /// assert_eq!(r.capacity(), 3);
+    /// s.try_broadcast(1).unwrap();
+    /// s.try_broadcast(2).unwrap();
+    /// s.try_broadcast(3).unwrap();
+    ///
+    /// r.set_capacity(1);
+    /// assert_eq!(r.capacity(), 1);
+    /// assert_eq!(r.try_recv().unwrap(), 3);
+    /// assert_eq!(r.try_recv(), Err(TryRecvError::Empty));
+    /// s.try_broadcast(1).unwrap();
+    /// assert_eq!(s.try_broadcast(2), Err(TrySendError::Full(2)));
+    ///
+    /// r.set_capacity(2);
+    /// assert_eq!(r.capacity(), 2);
+    /// s.try_broadcast(2).unwrap();
+    /// assert_eq!(s.try_broadcast(2), Err(TrySendError::Full(2)));
+    /// ```
+    pub fn set_capacity(&mut self, new_cap: usize) {
+        self.inner.lock().unwrap().set_capacity(new_cap);
     }
 
     /// Closes the channel.
@@ -511,7 +599,9 @@ impl<T> Receiver<T> {
     /// # });
     /// ```
     pub fn is_full(&self) -> bool {
-        self.inner.lock().unwrap().queue.len() == self.capacity
+        let inner = self.inner.lock().unwrap();
+
+        inner.queue.len() == inner.capacity
     }
 
     /// Returns the number of messages in the channel.
@@ -570,6 +660,16 @@ impl<T> Receiver<T> {
     /// ```
     pub fn sender_count(&self) -> usize {
         self.inner.lock().unwrap().sender_count
+    }
+
+    fn sync_recv_count(&mut self) {
+        let inner = self.inner.lock().unwrap();
+
+        if inner.send_count < self.last_send_count {
+            // This means channel shrank so we need to adjust the `self.recv_count`.
+            self.recv_count = self.recv_count.saturating_sub(self.last_send_count - inner.send_count);
+        }
+        self.last_send_count = inner.send_count;
     }
 }
 
@@ -631,6 +731,7 @@ impl<T: Clone> Receiver<T> {
     /// # });
     /// ```
     pub fn try_recv(&mut self) -> Result<T, TryRecvError> {
+        self.sync_recv_count();
         let mut inner = self.inner.lock().unwrap();
         let msg_count = inner.send_count - self.recv_count;
         if msg_count == 0 {
@@ -657,6 +758,7 @@ impl<T: Clone> Receiver<T> {
 
 impl<T> Drop for Receiver<T> {
     fn drop(&mut self) {
+        self.sync_recv_count();
         let mut inner = self.inner.lock().unwrap();
         let msg_count = inner.send_count - self.recv_count;
         let len = inner.queue.len();
@@ -691,8 +793,8 @@ impl<T> Clone for Receiver<T> {
         inner.receiver_count += 1;
         Receiver {
             inner: self.inner.clone(),
-            capacity: self.capacity,
             recv_count: inner.send_count,
+            last_send_count: inner.send_count,
             listener: None,
         }
     }
@@ -914,7 +1016,7 @@ impl<'a, T: Clone> Future for Send<'a, T> {
                 Ok(()) => {
                     let inner = this.sender.inner.lock().unwrap();
 
-                    if inner.queue.len() < this.sender.capacity() {
+                    if inner.queue.len() < inner.capacity {
                         // Not full still, so notify the next awaiting sender.
                         inner.send_ops.notify(1);
                     }

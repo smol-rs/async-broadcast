@@ -131,3 +131,43 @@ fn parallel_async() {
         }))
         .run();
 }
+
+#[test]
+fn channel_shrink() {
+    let (s1, mut r1) = broadcast(4);
+    let mut r2 = r1.clone();
+    let mut r3 = r1.clone();
+    let mut r4 = r1.clone();
+
+    s1.try_broadcast(1).unwrap();
+    s1.try_broadcast(2).unwrap();
+    s1.try_broadcast(3).unwrap();
+    s1.try_broadcast(4).unwrap();
+
+    assert_eq!(r2.try_recv().unwrap(), 1);
+    assert_eq!(r2.try_recv().unwrap(), 2);
+
+    assert_eq!(r3.try_recv().unwrap(), 1);
+    assert_eq!(r3.try_recv().unwrap(), 2);
+    assert_eq!(r3.try_recv().unwrap(), 3);
+
+    assert_eq!(r4.try_recv().unwrap(), 1);
+    assert_eq!(r4.try_recv().unwrap(), 2);
+    assert_eq!(r4.try_recv().unwrap(), 3);
+    assert_eq!(r4.try_recv().unwrap(), 4);
+
+    r1.set_capacity(2);
+
+    assert_eq!(r1.try_recv().unwrap(), 3);
+    assert_eq!(r1.try_recv().unwrap(), 4);
+    assert_eq!(r1.try_recv(), Err(TryRecvError::Empty));
+
+    assert_eq!(r2.try_recv().unwrap(), 3);
+    assert_eq!(r2.try_recv().unwrap(), 4);
+    assert_eq!(r2.try_recv(), Err(TryRecvError::Empty));
+
+    assert_eq!(r3.try_recv().unwrap(), 4);
+    assert_eq!(r3.try_recv(), Err(TryRecvError::Empty));
+
+    assert_eq!(r4.try_recv(), Err(TryRecvError::Empty));
+}
