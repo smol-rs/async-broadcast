@@ -87,7 +87,7 @@ use futures_core::stream::Stream;
 /// let (s, mut r1) = broadcast(1);
 /// let mut r2 = r1.clone();
 ///
-/// assert_eq!(s.broadcast(10).await, Ok(()));
+/// assert_eq!(s.broadcast(10).await, Ok(None));
 /// assert_eq!(s.try_broadcast(20), Err(TrySendError::Full(20)));
 ///
 /// assert_eq!(r1.recv().await, Ok(10));
@@ -102,9 +102,11 @@ pub fn broadcast<T>(cap: usize) -> (Sender<T>, Receiver<T>) {
     let inner = Arc::new(Mutex::new(Inner {
         queue: VecDeque::with_capacity(cap),
         capacity: cap,
+        overflow: false,
         receiver_count: 1,
         sender_count: 1,
         send_count: 0,
+        replaced_count: 0,
         is_closed: false,
         send_ops: Event::new(),
         recv_ops: Event::new(),
@@ -116,6 +118,7 @@ pub fn broadcast<T>(cap: usize) -> (Sender<T>, Receiver<T>) {
         inner,
         recv_count: 0,
         last_send_count: 0,
+        last_replaced_count: 0,
         listener: None,
     };
     (s, r)
@@ -130,6 +133,8 @@ struct Inner<T> {
     receiver_count: usize,
     sender_count: usize,
     send_count: usize,
+    replaced_count: usize,
+    overflow: bool,
 
     is_closed: bool,
 
@@ -234,6 +239,46 @@ impl<T> Sender<T> {
     /// ```
     pub fn set_capacity(&mut self, new_cap: usize) {
         self.inner.lock().unwrap().set_capacity(new_cap);
+    }
+
+    /// If overflow mode is enabled on this channel.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use async_broadcast::broadcast;
+    ///
+    /// let (s, r) = broadcast::<i32>(5);
+    /// assert!(!s.overflow());
+    /// ```
+    pub fn overflow(&self) -> bool {
+        self.inner.lock().unwrap().overflow
+    }
+
+    /// Set overflow mode on the channel.
+    ///
+    /// When overflow mode is set, broadcasting to the channel will succeed even if the channel is
+    /// full. It achieves that by removing the oldest message from the channel.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use async_broadcast::{broadcast, TrySendError, TryRecvError};
+    ///
+    /// let (mut s, mut r) = broadcast::<i32>(2);
+    /// s.try_broadcast(1).unwrap();
+    /// s.try_broadcast(2).unwrap();
+    /// assert_eq!(s.try_broadcast(3), Err(TrySendError::Full(3)));
+    /// s.set_overflow(true);
+    /// assert_eq!(s.try_broadcast(3).unwrap(), Some(1));
+    /// assert_eq!(s.try_broadcast(4).unwrap(), Some(2));
+    ///
+    /// assert_eq!(r.try_recv().unwrap(), 3);
+    /// assert_eq!(r.try_recv().unwrap(), 4);
+    /// assert_eq!(r.try_recv(), Err(TryRecvError::Empty));
+    /// ```
+    pub fn set_overflow(&mut self, overflow: bool) {
+        self.inner.lock().unwrap().overflow = overflow;
     }
 
     /// Closes the channel.
@@ -381,7 +426,10 @@ impl<T> Sender<T> {
 impl<T: Clone> Sender<T> {
     /// Broadcasts a message on the channel.
     ///
-    /// If the channel is full, this method waits until there is space for a message.
+    /// If the channel is full, this method waits until there is space for a message unless overflow
+    /// mode (set through [`Sender::set_overflow`]) is enabled. If the overflow mode is enabled it
+    /// removes the oldest message from the channel to make room for the new message. The removed
+    /// message is returned to the caller.
     ///
     /// If the channel is closed, this method returns an error.
     ///
@@ -393,7 +441,7 @@ impl<T: Clone> Sender<T> {
     ///
     /// let (s, r) = broadcast(1);
     ///
-    /// assert_eq!(s.broadcast(1).await, Ok(()));
+    /// assert_eq!(s.broadcast(1).await, Ok(None));
     /// drop(r);
     /// assert_eq!(s.broadcast(2).await, Err(SendError(2)));
     /// # });
@@ -408,7 +456,12 @@ impl<T: Clone> Sender<T> {
 
     /// Attempts to broadcast a message on the channel.
     ///
-    /// If the channel is full or closed, this method returns an error.
+    /// If the channel is full, this method returns an error unless overflow mode (set through
+    /// [`Sender::set_overflow`]) is enabled. If the overflow mode is enabled, it removes the
+    /// oldest message from the channel to make room for the new message. The removed message
+    /// is returned to the caller.
+    ///
+    /// If the channel is closed, this method returns an error.
     ///
     /// # Examples
     ///
@@ -417,27 +470,37 @@ impl<T: Clone> Sender<T> {
     ///
     /// let (s, r) = broadcast(1);
     ///
-    /// assert_eq!(s.try_broadcast(1), Ok(()));
+    /// assert_eq!(s.try_broadcast(1), Ok(None));
     /// assert_eq!(s.try_broadcast(2), Err(TrySendError::Full(2)));
     ///
     /// drop(r);
     /// assert_eq!(s.try_broadcast(3), Err(TrySendError::Closed(3)));
     /// ```
-    pub fn try_broadcast(&self, msg: T) -> Result<(), TrySendError<T>> {
+    pub fn try_broadcast(&self, msg: T) -> Result<Option<T>, TrySendError<T>> {
+        let mut ret = None;
         let mut inner = self.inner.lock().unwrap();
         if inner.is_closed {
             return Err(TrySendError::Closed(msg));
         } else if inner.queue.len() == inner.capacity {
-            return Err(TrySendError::Full(msg));
+            if inner.overflow {
+                // Make room by popping a message.
+                ret = inner.queue.pop_front().map(|(m, _)| m);
+            } else {
+                return Err(TrySendError::Full(msg));
+            }
         }
         let receiver_count = inner.receiver_count;
         inner.queue.push_back((msg, receiver_count));
-        inner.send_count += 1;
+        if ret.is_some() {
+            inner.replaced_count += 1;
+        } else {
+            inner.send_count += 1;
+        }
 
         // Notify all awaiting receive operations.
         inner.recv_ops.notify(usize::MAX);
 
-        Ok(())
+        Ok(ret)
     }
 }
 
@@ -468,6 +531,7 @@ pub struct Receiver<T> {
     inner: Arc<Mutex<Inner<T>>>,
     recv_count: usize,
     last_send_count: usize,
+    last_replaced_count: usize,
 
     /// Listens for a send or close event to unblock this stream.
     listener: Option<EventListener>,
@@ -519,6 +583,46 @@ impl<T> Receiver<T> {
     /// ```
     pub fn set_capacity(&mut self, new_cap: usize) {
         self.inner.lock().unwrap().set_capacity(new_cap);
+    }
+
+    /// If overflow mode is enabled on this channel.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use async_broadcast::broadcast;
+    ///
+    /// let (_s, r) = broadcast::<i32>(5);
+    /// assert!(!r.overflow());
+    /// ```
+    pub fn overflow(&self) -> bool {
+        self.inner.lock().unwrap().overflow
+    }
+
+    /// Set overflow mode on the channel.
+    ///
+    /// When overflow mode is set, broadcasting to the channel will succeed even if the channel is
+    /// full. It achieves that by removing the oldest message from the channel.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use async_broadcast::{broadcast, TrySendError, TryRecvError};
+    ///
+    /// let (s, mut r) = broadcast::<i32>(2);
+    /// s.try_broadcast(1).unwrap();
+    /// s.try_broadcast(2).unwrap();
+    /// assert_eq!(s.try_broadcast(3), Err(TrySendError::Full(3)));
+    /// r.set_overflow(true);
+    /// assert_eq!(s.try_broadcast(3).unwrap(), Some(1));
+    /// assert_eq!(s.try_broadcast(4).unwrap(), Some(2));
+    ///
+    /// assert_eq!(r.try_recv().unwrap(), 3);
+    /// assert_eq!(r.try_recv().unwrap(), 4);
+    /// assert_eq!(r.try_recv(), Err(TryRecvError::Empty));
+    /// ```
+    pub fn set_overflow(&mut self, overflow: bool) {
+        self.inner.lock().unwrap().overflow = overflow;
     }
 
     /// Closes the channel.
@@ -670,6 +774,9 @@ impl<T> Receiver<T> {
             self.recv_count = self.recv_count.saturating_sub(self.last_send_count - inner.send_count);
         }
         self.last_send_count = inner.send_count;
+
+        self.recv_count = self.recv_count.saturating_sub(inner.replaced_count - self.last_replaced_count);
+        self.last_replaced_count = inner.replaced_count;
     }
 }
 
@@ -690,7 +797,7 @@ impl<T: Clone> Receiver<T> {
     /// let (s, mut r1) = broadcast(1);
     /// let mut r2 = r1.clone();
     ///
-    /// assert_eq!(s.broadcast(1).await, Ok(()));
+    /// assert_eq!(s.broadcast(1).await, Ok(None));
     /// drop(s);
     ///
     /// assert_eq!(r1.recv().await, Ok(1));
@@ -718,7 +825,7 @@ impl<T: Clone> Receiver<T> {
     ///
     /// let (s, mut r1) = broadcast(1);
     /// let mut r2 = r1.clone();
-    /// assert_eq!(s.broadcast(1).await, Ok(()));
+    /// assert_eq!(s.broadcast(1).await, Ok(None));
     ///
     /// assert_eq!(r1.try_recv(), Ok(1));
     /// assert_eq!(r1.try_recv(), Err(TryRecvError::Empty));
@@ -741,10 +848,10 @@ impl<T: Clone> Receiver<T> {
                 return Err(TryRecvError::Empty);
             }
         }
-        let len = inner.queue.len();
-        let msg = inner.queue[len - msg_count].0.clone();
-        inner.queue[len - msg_count].1 -= 1;
-        if inner.queue[len - msg_count].1 == 0 {
+        let msg_index = inner.queue.len().saturating_sub(msg_count);
+        let msg = inner.queue[msg_index].0.clone();
+        inner.queue[msg_index].1 -= 1;
+        if inner.queue[msg_index].1 == 0 {
             inner.queue.pop_front();
 
             // Notify 1 awaiting senders that there is now room. If there is still room in the
@@ -762,8 +869,9 @@ impl<T> Drop for Receiver<T> {
         let mut inner = self.inner.lock().unwrap();
         let msg_count = inner.send_count - self.recv_count;
         let len = inner.queue.len();
+        let msg_index = len.saturating_sub(msg_count);
 
-        for i in len - msg_count..len {
+        for i in msg_index..len {
             inner.queue[i].1 -= 1;
         }
         let mut poped = false;
@@ -795,6 +903,7 @@ impl<T> Clone for Receiver<T> {
             inner: self.inner.clone(),
             recv_count: inner.send_count,
             last_send_count: inner.send_count,
+            last_replaced_count: inner.replaced_count,
             listener: None,
         }
     }
@@ -1003,7 +1112,7 @@ pub struct Send<'a, T> {
 impl<'a, T> Unpin for Send<'a, T> {}
 
 impl<'a, T: Clone> Future for Send<'a, T> {
-    type Output = Result<(), SendError<T>>;
+    type Output = Result<Option<T>, SendError<T>>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let mut this = Pin::new(self);
@@ -1013,7 +1122,7 @@ impl<'a, T: Clone> Future for Send<'a, T> {
 
             // Attempt to send a message.
             match this.sender.try_broadcast(msg) {
-                Ok(()) => {
+                Ok(msg) => {
                     let inner = this.sender.inner.lock().unwrap();
 
                     if inner.queue.len() < inner.capacity {
@@ -1021,7 +1130,7 @@ impl<'a, T: Clone> Future for Send<'a, T> {
                         inner.send_ops.notify(1);
                     }
 
-                    return Poll::Ready(Ok(()));
+                    return Poll::Ready(Ok(msg));
                 }
                 Err(TrySendError::Closed(msg)) => return Poll::Ready(Err(SendError(msg))),
                 Err(TrySendError::Full(m)) => this.msg = Some(m),
