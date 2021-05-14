@@ -1,10 +1,14 @@
-use std::sync::mpsc;
+use std::{sync::mpsc, thread::sleep, time::Duration};
 
 use futures_util::stream::StreamExt;
 use async_broadcast::*;
 
 use easy_parallel::Parallel;
 use futures_lite::future::block_on;
+
+fn ms(ms: u64) -> Duration {
+    Duration::from_millis(ms)
+}
 
 #[test]
 fn basic_sync() {
@@ -94,6 +98,7 @@ fn parallel_async() {
     Parallel::new()
         .add(move || block_on(async move {
             sender_sync_recv.recv().unwrap();
+            sleep(ms(5));
 
             s1.broadcast(7).await.unwrap();
             s2.broadcast(8).await.unwrap();
@@ -120,6 +125,7 @@ fn parallel_async() {
             assert_eq!(r2.recv().await.unwrap(), 8);
 
             receiver_sync_recv.recv().unwrap();
+            sleep(ms(5));
             assert_eq!(r1.next().await.unwrap(), 9);
             assert_eq!(r2.next().await.unwrap(), 9);
 
