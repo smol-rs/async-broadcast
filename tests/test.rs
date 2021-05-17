@@ -1,10 +1,14 @@
-use std::sync::mpsc;
+use std::{sync::mpsc, thread::sleep, time::Duration};
 
 use futures_util::stream::StreamExt;
 use async_broadcast::*;
 
 use easy_parallel::Parallel;
 use futures_lite::future::block_on;
+
+fn ms(ms: u64) -> Duration {
+    Duration::from_millis(ms)
+}
 
 #[test]
 fn basic_sync() {
@@ -94,6 +98,7 @@ fn parallel_async() {
     Parallel::new()
         .add(move || block_on(async move {
             sender_sync_recv.recv().unwrap();
+            sleep(ms(5));
 
             s1.broadcast(7).await.unwrap();
             s2.broadcast(8).await.unwrap();
@@ -120,6 +125,7 @@ fn parallel_async() {
             assert_eq!(r2.recv().await.unwrap(), 8);
 
             receiver_sync_recv.recv().unwrap();
+            sleep(ms(5));
             assert_eq!(r1.next().await.unwrap(), 9);
             assert_eq!(r2.next().await.unwrap(), 9);
 
@@ -130,4 +136,83 @@ fn parallel_async() {
             assert_eq!(r2.recv().await, Err(RecvError));
         }))
         .run();
+}
+
+#[test]
+fn channel_shrink() {
+    let (s1, mut r1) = broadcast(4);
+    let mut r2 = r1.clone();
+    let mut r3 = r1.clone();
+    let mut r4 = r1.clone();
+
+    s1.try_broadcast(1).unwrap();
+    s1.try_broadcast(2).unwrap();
+    s1.try_broadcast(3).unwrap();
+    s1.try_broadcast(4).unwrap();
+
+    assert_eq!(r2.try_recv().unwrap(), 1);
+    assert_eq!(r2.try_recv().unwrap(), 2);
+
+    assert_eq!(r3.try_recv().unwrap(), 1);
+    assert_eq!(r3.try_recv().unwrap(), 2);
+    assert_eq!(r3.try_recv().unwrap(), 3);
+
+    assert_eq!(r4.try_recv().unwrap(), 1);
+    assert_eq!(r4.try_recv().unwrap(), 2);
+    assert_eq!(r4.try_recv().unwrap(), 3);
+    assert_eq!(r4.try_recv().unwrap(), 4);
+
+    r1.set_capacity(2);
+
+    assert_eq!(r1.try_recv().unwrap(), 3);
+    assert_eq!(r1.try_recv().unwrap(), 4);
+    assert_eq!(r1.try_recv(), Err(TryRecvError::Empty));
+
+    assert_eq!(r2.try_recv().unwrap(), 3);
+    assert_eq!(r2.try_recv().unwrap(), 4);
+    assert_eq!(r2.try_recv(), Err(TryRecvError::Empty));
+
+    assert_eq!(r3.try_recv().unwrap(), 4);
+    assert_eq!(r3.try_recv(), Err(TryRecvError::Empty));
+
+    assert_eq!(r4.try_recv(), Err(TryRecvError::Empty));
+}
+
+#[test]
+fn overflow() {
+    let (s1, mut r1) = broadcast(2);
+    r1.set_overflow(true);
+    // We'll keep r1 as the lagging receiver.
+    let mut r2 = r1.clone();
+    let mut r3 = r1.clone();
+
+    let (sender_sync_send, sender_sync_recv) = mpsc::channel();
+
+    Parallel::new()
+        .add(move || block_on(async move {
+            s1.broadcast(7).await.unwrap();
+            s1.broadcast(8).await.unwrap();
+            sender_sync_recv.recv().unwrap();
+            sleep(ms(5));
+
+            s1.broadcast(9).await.unwrap();
+            sender_sync_recv.recv().unwrap();
+        }))
+        .add(move || block_on(async move {
+            assert_eq!(r2.next().await.unwrap(), 7);
+            assert_eq!(r2.recv().await.unwrap(), 8);
+
+            sender_sync_send.send(()).unwrap();
+            assert_eq!(r2.next().await.unwrap(), 9);
+            sender_sync_send.send(()).unwrap();
+        }))
+        .add(move || block_on(async move {
+            assert_eq!(r3.next().await.unwrap(), 7);
+            assert_eq!(r3.recv().await.unwrap(), 8);
+            assert_eq!(r3.next().await.unwrap(), 9);
+        }))
+        .run();
+
+    assert_eq!(r1.try_recv().unwrap(), 8);
+    assert_eq!(r1.try_recv().unwrap(), 9);
 }
