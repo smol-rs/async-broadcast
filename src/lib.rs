@@ -175,9 +175,10 @@ impl<T> Inner<T> {
         }
 
         // Ensure queue doesn't have more than `new_cap` messages.
-        while new_cap < self.queue.len() {
-            self.queue.pop_front();
-            self.send_count -= 1;
+        if new_cap < self.queue.len() {
+            let diff = self.queue.len() - new_cap;
+            self.queue.drain(0..diff);
+            self.send_count -= diff;
         }
     }
 }
