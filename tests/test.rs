@@ -1,6 +1,6 @@
 use std::{sync::mpsc, thread::sleep, time::Duration};
 
-use futures_util::stream::StreamExt;
+use futures_util::{future::join, stream::StreamExt};
 use async_broadcast::*;
 
 use easy_parallel::Parallel;
@@ -215,4 +215,39 @@ fn overflow() {
 
     assert_eq!(r1.try_recv().unwrap(), 8);
     assert_eq!(r1.try_recv().unwrap(), 9);
+}
+
+#[test]
+fn open_channel() {
+    let s1 = open_broadcast(2);
+    let s2 = s1.clone();
+    let s3 = s1.clone();
+
+    let (receiver_sync_send, receiver_sync_recv) = mpsc::channel();
+
+    Parallel::new()
+        .add(move || block_on(async move {
+            receiver_sync_send.send(()).unwrap();
+
+            let (result1, result2) = join(
+                s1.broadcast(7),
+                s2.broadcast(8),
+            ).await;
+            result1.unwrap();
+            result2.unwrap();
+
+            s1.broadcast(9).await.unwrap();
+            s2.broadcast(10).await.unwrap();
+        }))
+        .add(move || block_on(async move {
+            receiver_sync_recv.recv().unwrap();
+            sleep(ms(5));
+
+            let mut r = s3.receiver();
+            assert_eq!(r.next().await.unwrap(), 7);
+            assert_eq!(r.recv().await.unwrap(), 8);
+            assert_eq!(r.recv().await.unwrap(), 9);
+            assert_eq!(r.recv().await.unwrap(), 10);
+        }))
+        .run();
 }

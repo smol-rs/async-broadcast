@@ -97,13 +97,50 @@ use futures_core::stream::Stream;
 /// # });
 /// ```
 pub fn broadcast<T>(cap: usize) -> (Sender<T>, Receiver<T>) {
+    let s = open_broadcast(cap);
+    s.inner.lock().unwrap().open_channel = false;
+    let r = s.receiver();
+
+    (s, r)
+}
+
+/// Create a new open broadcast channel.
+///
+/// The created channel has space to hold at most `cap` messages at a time. Unlike the channel
+/// created by [`broadcast`], this channel allows the channel to be open even when there are no
+/// receivers. Hence the reason it only returns a [`Sender`]. Receiver can be created on demand
+/// using [`Sender::receiver`].
+///
+/// [`Sender::try_broadcast`] will return [`TrySendError::Disconnected`] if there are no receivers
+/// for this channel and [`Sender::broadcast`] will wait until receivers are available.
+///
+/// # Panics
+///
+/// Capacity must be a positive number. If `cap` is zero, this function will panic.
+///
+/// # Examples
+///
+/// ```
+/// # futures_lite::future::block_on(async {
+/// use async_broadcast::{open_broadcast, TryRecvError, TrySendError};
+///
+/// let s = open_broadcast(1);
+/// assert_eq!(s.try_broadcast(10), Err(TrySendError::Disconnected(10)));
+///
+/// let mut r = s.receiver();
+/// assert_eq!(s.broadcast(10).await, Ok(None));
+/// assert_eq!(r.recv().await, Ok(10));
+/// # });
+/// ```
+pub fn open_broadcast<T>(cap: usize) -> Sender<T> {
     assert!(cap > 0, "capacity cannot be zero");
 
     let inner = Arc::new(Mutex::new(Inner {
         queue: VecDeque::with_capacity(cap),
         capacity: cap,
         overflow: false,
-        receiver_count: 1,
+        open_channel: true,
+        receiver_count: 0,
         sender_count: 1,
         send_count: 0,
         replaced_count: 0,
@@ -111,17 +148,8 @@ pub fn broadcast<T>(cap: usize) -> (Sender<T>, Receiver<T>) {
         send_ops: Event::new(),
         recv_ops: Event::new(),
     }));
-    let s = Sender {
-        inner: inner.clone(),
-    };
-    let r = Receiver {
-        inner,
-        recv_count: 0,
-        last_send_count: 0,
-        last_replaced_count: 0,
-        listener: None,
-    };
-    (s, r)
+
+    Sender { inner }
 }
 
 #[derive(Debug)]
@@ -135,6 +163,7 @@ struct Inner<T> {
     send_count: usize,
     replaced_count: usize,
     overflow: bool,
+    open_channel: bool,
 
     is_closed: bool,
 
@@ -422,6 +451,41 @@ impl<T> Sender<T> {
     pub fn sender_count(&self) -> usize {
         self.inner.lock().unwrap().sender_count
     }
+
+    /// Creates a new receiver for this sender.
+    ///
+    /// This is main useful for open broadcast channels created through [`open_broadcast`].
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use async_broadcast::{open_broadcast, TryRecvError, TrySendError};
+    ///
+    /// let s = open_broadcast(1);
+    /// assert_eq!(s.try_broadcast(10), Err(TrySendError::Disconnected(10)));
+    ///
+    /// let mut r = s.receiver();
+    /// assert_eq!(s.try_broadcast(10), Ok(None));
+    /// assert_eq!(r.try_recv(), Ok(10));
+    /// ```
+    pub fn receiver(&self) -> Receiver<T> {
+        let mut inner = self.inner.lock().unwrap();
+        inner.receiver_count += 1;
+
+        if inner.receiver_count == 1 && inner.open_channel {
+            // Notify 1 awaiting senders that there is now a receiver. If there is still room in the
+            // queue, the notified operation will notify another awaiting sender.
+            inner.send_ops.notify(1);
+        }
+
+        Receiver {
+            inner: self.inner.clone(),
+            recv_count: inner.send_count,
+            last_send_count: inner.send_count,
+            last_replaced_count: inner.replaced_count,
+            listener: None,
+        }
+    }
 }
 
 impl<T: Clone> Sender<T> {
@@ -482,6 +546,8 @@ impl<T: Clone> Sender<T> {
         let mut inner = self.inner.lock().unwrap();
         if inner.is_closed {
             return Err(TrySendError::Closed(msg));
+        } else if inner.receiver_count == 0 && inner.open_channel {
+            return Err(TrySendError::Disconnected(msg));
         } else if inner.queue.len() == inner.capacity {
             if inner.overflow {
                 // Make room by popping a message.
@@ -893,7 +959,7 @@ impl<T> Drop for Receiver<T> {
         }
         inner.receiver_count -= 1;
 
-        if inner.receiver_count == 0 {
+        if inner.receiver_count == 0 && !inner.open_channel {
             inner.close();
         }
     }
@@ -1003,6 +1069,9 @@ pub enum TrySendError<T> {
 
     /// The channel is closed.
     Closed(T),
+
+    /// There are currently no receivers.
+    Disconnected(T),
 }
 
 impl<T> TrySendError<T> {
@@ -1011,6 +1080,7 @@ impl<T> TrySendError<T> {
         match self {
             TrySendError::Full(t) => t,
             TrySendError::Closed(t) => t,
+            TrySendError::Disconnected(t) => t,
         }
     }
 
@@ -1018,15 +1088,23 @@ impl<T> TrySendError<T> {
     pub fn is_full(&self) -> bool {
         match self {
             TrySendError::Full(_) => true,
-            TrySendError::Closed(_) => false,
+            TrySendError::Closed(_) | TrySendError::Disconnected(_) => false,
         }
     }
 
     /// Returns `true` if the channel is closed.
     pub fn is_closed(&self) -> bool {
         match self {
-            TrySendError::Full(_) => false,
+            TrySendError::Full(_) | TrySendError::Disconnected(_) => false,
             TrySendError::Closed(_) => true,
+        }
+    }
+
+    /// Returns `true` if the channel is closed.
+    pub fn is_disconnected(&self) -> bool {
+        match self {
+            TrySendError::Full(_) | TrySendError::Closed(_) => false,
+            TrySendError::Disconnected(_) => true,
         }
     }
 }
@@ -1038,6 +1116,7 @@ impl<T> fmt::Debug for TrySendError<T> {
         match *self {
             TrySendError::Full(..) => write!(f, "Full(..)"),
             TrySendError::Closed(..) => write!(f, "Closed(..)"),
+            TrySendError::Disconnected(..) => write!(f, "Disconnected(..)"),
         }
     }
 }
@@ -1047,6 +1126,7 @@ impl<T> fmt::Display for TrySendError<T> {
         match *self {
             TrySendError::Full(..) => write!(f, "sending into a full channel"),
             TrySendError::Closed(..) => write!(f, "sending into a closed channel"),
+            TrySendError::Disconnected(..) => write!(f, "sending into the void (no receivers)"),
         }
     }
 }
@@ -1137,7 +1217,7 @@ impl<'a, T: Clone> Future for Send<'a, T> {
                     return Poll::Ready(Ok(msg));
                 }
                 Err(TrySendError::Closed(msg)) => return Poll::Ready(Err(SendError(msg))),
-                Err(TrySendError::Full(m)) => this.msg = Some(m),
+                Err(TrySendError::Full(m)) | Err(TrySendError::Disconnected(m)) => this.msg = Some(m),
             }
 
             // Sending failed - now start listening for notifications or wait for one.
