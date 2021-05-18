@@ -776,6 +776,7 @@ impl<T> Receiver<T> {
         }
         self.last_send_count = inner.send_count;
 
+        assert!(inner.replaced_count >= self.last_replaced_count);
         self.recv_count = self.recv_count.saturating_sub(inner.replaced_count - self.last_replaced_count);
         self.last_replaced_count = inner.replaced_count;
     }
