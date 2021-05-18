@@ -776,6 +776,7 @@ impl<T> Receiver<T> {
         }
         self.last_send_count = inner.send_count;
 
+        assert!(inner.replaced_count >= self.last_replaced_count);
         self.recv_count = self.recv_count.saturating_sub(inner.replaced_count - self.last_replaced_count);
         self.last_replaced_count = inner.replaced_count;
     }
@@ -855,9 +856,11 @@ impl<T: Clone> Receiver<T> {
         if inner.queue[msg_index].1 == 0 {
             inner.queue.pop_front();
 
-            // Notify 1 awaiting senders that there is now room. If there is still room in the
-            // queue, the notified operation will notify another awaiting sender.
-            inner.send_ops.notify(1);
+            if !inner.overflow {
+                // Notify 1 awaiting senders that there is now room. If there is still room in the
+                // queue, the notified operation will notify another awaiting sender.
+                inner.send_ops.notify(1);
+            }
         }
         self.recv_count += 1;
         Ok(msg)
@@ -883,7 +886,7 @@ impl<T> Drop for Receiver<T> {
             }
         }
 
-        if poped {
+        if poped && !inner.overflow {
             // Notify 1 awaiting senders that there is now room. If there is still room in the
             // queue, the notified operation will notify another awaiting sender.
             inner.send_ops.notify(1);
