@@ -905,12 +905,16 @@ impl<T: Clone> Receiver<T> {
 
         if inner.send_count < self.last_send_count {
             // This means channel shrank so we need to adjust the `self.recv_count`.
-            self.recv_count = self.recv_count.saturating_sub(self.last_send_count - inner.send_count);
+            self.recv_count = self
+                .recv_count
+                .saturating_sub(self.last_send_count - inner.send_count);
         }
         self.last_send_count = inner.send_count;
 
         assert!(inner.replaced_count >= self.last_replaced_count);
-        self.recv_count = self.recv_count.saturating_sub(inner.replaced_count - self.last_replaced_count);
+        self.recv_count = self
+            .recv_count
+            .saturating_sub(inner.replaced_count - self.last_replaced_count);
         self.last_replaced_count = inner.replaced_count;
 
         let msg_count = inner.send_count - self.recv_count;
@@ -947,12 +951,16 @@ impl<T> Drop for Receiver<T> {
 
         if inner.send_count < self.last_send_count {
             // This means channel shrank so we need to adjust the `self.recv_count`.
-            self.recv_count = self.recv_count.saturating_sub(self.last_send_count - inner.send_count);
+            self.recv_count = self
+                .recv_count
+                .saturating_sub(self.last_send_count - inner.send_count);
         }
         self.last_send_count = inner.send_count;
 
         assert!(inner.replaced_count >= self.last_replaced_count);
-        self.recv_count = self.recv_count.saturating_sub(inner.replaced_count - self.last_replaced_count);
+        self.recv_count = self
+            .recv_count
+            .saturating_sub(inner.replaced_count - self.last_replaced_count);
         self.last_replaced_count = inner.replaced_count;
 
         let msg_count = inner.send_count - self.recv_count;
@@ -1238,7 +1246,9 @@ impl<'a, T: Clone> Future for Send<'a, T> {
                     return Poll::Ready(Ok(msg));
                 }
                 Err(TrySendError::Closed(msg)) => return Poll::Ready(Err(SendError(msg))),
-                Err(TrySendError::Full(m)) | Err(TrySendError::Disconnected(m)) => this.msg = Some(m),
+                Err(TrySendError::Full(m)) | Err(TrySendError::Disconnected(m)) => {
+                    this.msg = Some(m)
+                }
             }
 
             // Sending failed - now start listening for notifications or wait for one.
