@@ -1,7 +1,7 @@
 use std::{sync::mpsc, thread::sleep, time::Duration};
 
-use futures_util::{future::join, stream::StreamExt};
 use async_broadcast::*;
+use futures_util::{future::join, stream::StreamExt};
 
 use easy_parallel::Parallel;
 use futures_lite::future::block_on;
@@ -96,45 +96,49 @@ fn parallel_async() {
     let (receiver_sync_send, receiver_sync_recv) = mpsc::channel();
 
     Parallel::new()
-        .add(move || block_on(async move {
-            sender_sync_recv.recv().unwrap();
-            sleep(ms(5));
+        .add(move || {
+            block_on(async move {
+                sender_sync_recv.recv().unwrap();
+                sleep(ms(5));
 
-            s1.broadcast(7).await.unwrap();
-            s2.broadcast(8).await.unwrap();
-            assert!(s2.try_broadcast(9).unwrap_err().is_full());
-            assert!(s1.try_broadcast(10).unwrap_err().is_full());
-            receiver_sync_send.send(()).unwrap();
+                s1.broadcast(7).await.unwrap();
+                s2.broadcast(8).await.unwrap();
+                assert!(s2.try_broadcast(9).unwrap_err().is_full());
+                assert!(s1.try_broadcast(10).unwrap_err().is_full());
+                receiver_sync_send.send(()).unwrap();
 
-            s1.broadcast(9).await.unwrap();
-            s2.broadcast(10).await.unwrap();
+                s1.broadcast(9).await.unwrap();
+                s2.broadcast(10).await.unwrap();
 
-            drop(s1);
-            drop(s2);
-            receiver_sync_send.send(()).unwrap();
-        }))
-        .add(move || block_on(async move {
-            assert_eq!(r1.try_recv(), Err(TryRecvError::Empty));
-            assert_eq!(r2.try_recv(), Err(TryRecvError::Empty));
-            sender_sync_send.send(()).unwrap();
+                drop(s1);
+                drop(s2);
+                receiver_sync_send.send(()).unwrap();
+            })
+        })
+        .add(move || {
+            block_on(async move {
+                assert_eq!(r1.try_recv(), Err(TryRecvError::Empty));
+                assert_eq!(r2.try_recv(), Err(TryRecvError::Empty));
+                sender_sync_send.send(()).unwrap();
 
-            receiver_sync_recv.recv().unwrap();
-            assert_eq!(r1.next().await.unwrap(), 7);
-            assert_eq!(r2.next().await.unwrap(), 7);
-            assert_eq!(r1.recv().await.unwrap(), 8);
-            assert_eq!(r2.recv().await.unwrap(), 8);
+                receiver_sync_recv.recv().unwrap();
+                assert_eq!(r1.next().await.unwrap(), 7);
+                assert_eq!(r2.next().await.unwrap(), 7);
+                assert_eq!(r1.recv().await.unwrap(), 8);
+                assert_eq!(r2.recv().await.unwrap(), 8);
 
-            receiver_sync_recv.recv().unwrap();
-            sleep(ms(5));
-            assert_eq!(r1.next().await.unwrap(), 9);
-            assert_eq!(r2.next().await.unwrap(), 9);
+                receiver_sync_recv.recv().unwrap();
+                sleep(ms(5));
+                assert_eq!(r1.next().await.unwrap(), 9);
+                assert_eq!(r2.next().await.unwrap(), 9);
 
-            assert_eq!(r1.recv().await.unwrap(), 10);
-            assert_eq!(r2.recv().await.unwrap(), 10);
+                assert_eq!(r1.recv().await.unwrap(), 10);
+                assert_eq!(r2.recv().await.unwrap(), 10);
 
-            assert_eq!(r1.recv().await, Err(RecvError));
-            assert_eq!(r2.recv().await, Err(RecvError));
-        }))
+                assert_eq!(r1.recv().await, Err(RecvError));
+                assert_eq!(r2.recv().await, Err(RecvError));
+            })
+        })
         .run();
 }
 
@@ -189,28 +193,34 @@ fn overflow() {
     let (sender_sync_send, sender_sync_recv) = mpsc::channel();
 
     Parallel::new()
-        .add(move || block_on(async move {
-            s1.broadcast(7).await.unwrap();
-            s1.broadcast(8).await.unwrap();
-            sender_sync_recv.recv().unwrap();
-            sleep(ms(5));
+        .add(move || {
+            block_on(async move {
+                s1.broadcast(7).await.unwrap();
+                s1.broadcast(8).await.unwrap();
+                sender_sync_recv.recv().unwrap();
+                sleep(ms(5));
 
-            s1.broadcast(9).await.unwrap();
-            sender_sync_recv.recv().unwrap();
-        }))
-        .add(move || block_on(async move {
-            assert_eq!(r2.next().await.unwrap(), 7);
-            assert_eq!(r2.recv().await.unwrap(), 8);
+                s1.broadcast(9).await.unwrap();
+                sender_sync_recv.recv().unwrap();
+            })
+        })
+        .add(move || {
+            block_on(async move {
+                assert_eq!(r2.next().await.unwrap(), 7);
+                assert_eq!(r2.recv().await.unwrap(), 8);
 
-            sender_sync_send.send(()).unwrap();
-            assert_eq!(r2.next().await.unwrap(), 9);
-            sender_sync_send.send(()).unwrap();
-        }))
-        .add(move || block_on(async move {
-            assert_eq!(r3.next().await.unwrap(), 7);
-            assert_eq!(r3.recv().await.unwrap(), 8);
-            assert_eq!(r3.next().await.unwrap(), 9);
-        }))
+                sender_sync_send.send(()).unwrap();
+                assert_eq!(r2.next().await.unwrap(), 9);
+                sender_sync_send.send(()).unwrap();
+            })
+        })
+        .add(move || {
+            block_on(async move {
+                assert_eq!(r3.next().await.unwrap(), 7);
+                assert_eq!(r3.recv().await.unwrap(), 8);
+                assert_eq!(r3.next().await.unwrap(), 9);
+            })
+        })
         .run();
 
     assert_eq!(r1.try_recv().unwrap(), 8);
@@ -226,28 +236,29 @@ fn open_channel() {
     let (receiver_sync_send, receiver_sync_recv) = mpsc::channel();
 
     Parallel::new()
-        .add(move || block_on(async move {
-            receiver_sync_send.send(()).unwrap();
+        .add(move || {
+            block_on(async move {
+                receiver_sync_send.send(()).unwrap();
 
-            let (result1, result2) = join(
-                s1.broadcast(7),
-                s2.broadcast(8),
-            ).await;
-            result1.unwrap();
-            result2.unwrap();
+                let (result1, result2) = join(s1.broadcast(7), s2.broadcast(8)).await;
+                result1.unwrap();
+                result2.unwrap();
 
-            s1.broadcast(9).await.unwrap();
-            s2.broadcast(10).await.unwrap();
-        }))
-        .add(move || block_on(async move {
-            receiver_sync_recv.recv().unwrap();
-            sleep(ms(5));
+                s1.broadcast(9).await.unwrap();
+                s2.broadcast(10).await.unwrap();
+            })
+        })
+        .add(move || {
+            block_on(async move {
+                receiver_sync_recv.recv().unwrap();
+                sleep(ms(5));
 
-            let mut r = s3.receiver();
-            assert_eq!(r.next().await.unwrap(), 7);
-            assert_eq!(r.recv().await.unwrap(), 8);
-            assert_eq!(r.recv().await.unwrap(), 9);
-            assert_eq!(r.recv().await.unwrap(), 10);
-        }))
+                let mut r = s3.receiver();
+                assert_eq!(r.next().await.unwrap(), 7);
+                assert_eq!(r.recv().await.unwrap(), 8);
+                assert_eq!(r.recv().await.unwrap(), 9);
+                assert_eq!(r.recv().await.unwrap(), 10);
+            })
+        })
         .run();
 }
