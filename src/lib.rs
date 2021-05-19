@@ -914,7 +914,7 @@ impl<T: Clone> Receiver<T> {
         self.last_replaced_count = inner.replaced_count;
 
         let msg_count = inner.send_count - self.recv_count;
-        if msg_count == 0 {
+        if msg_count == 0 || inner.queue.is_empty() {
             if inner.is_closed {
                 return Err(TryRecvError::Closed);
             } else {
