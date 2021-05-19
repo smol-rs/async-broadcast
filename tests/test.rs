@@ -229,11 +229,12 @@ fn overflow() {
 
 #[test]
 fn open_channel() {
-    let s1 = open_broadcast(2);
+    let (s1, r) = broadcast(2);
+    let inactive = r.deactivate();
     let s2 = s1.clone();
-    let s3 = s1.clone();
 
     let (receiver_sync_send, receiver_sync_recv) = mpsc::channel();
+    let (sender_sync_send, sender_sync_recv) = mpsc::channel();
 
     Parallel::new()
         .add(move || {
@@ -244,6 +245,12 @@ fn open_channel() {
                 result1.unwrap();
                 result2.unwrap();
 
+                sender_sync_recv.recv().unwrap();
+                assert_eq!(s1.try_broadcast(9), Err(TrySendError::Inactive(9)));
+                assert_eq!(s2.try_broadcast(10), Err(TrySendError::Inactive(10)));
+                receiver_sync_send.send(()).unwrap();
+                sleep(ms(5));
+
                 s1.broadcast(9).await.unwrap();
                 s2.broadcast(10).await.unwrap();
             })
@@ -253,9 +260,15 @@ fn open_channel() {
                 receiver_sync_recv.recv().unwrap();
                 sleep(ms(5));
 
-                let mut r = s3.receiver();
+                let mut r = inactive.activate_cloned();
                 assert_eq!(r.next().await.unwrap(), 7);
                 assert_eq!(r.recv().await.unwrap(), 8);
+                drop(r);
+
+                sender_sync_send.send(()).unwrap();
+                receiver_sync_recv.recv().unwrap();
+
+                let mut r = inactive.activate();
                 assert_eq!(r.recv().await.unwrap(), 9);
                 assert_eq!(r.recv().await.unwrap(), 10);
             })
