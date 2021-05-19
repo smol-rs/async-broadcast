@@ -1328,7 +1328,7 @@ pub struct InactiveReceiver<T> {
 impl<T> InactiveReceiver<T> {
     /// Convert to an activate [`Receiver`].
     ///
-    /// Consumes `self`. Use [`activate_cloned`] if you want to keep `self`.
+    /// Consumes `self`. Use [`InactiveReceiver::activate_cloned`] if you want to keep `self`.
     ///
     /// # Examples
     ///
