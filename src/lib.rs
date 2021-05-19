@@ -543,7 +543,10 @@ impl<T: Clone> Sender<T> {
     /// ```
     pub fn try_broadcast(&self, msg: T) -> Result<Option<T>, TrySendError<T>> {
         let mut ret = None;
-        let mut inner = self.inner.lock().unwrap();
+        let mut inner = match self.inner.lock() {
+            Ok(i) => i,
+            Err(_) => return Err(TrySendError::Closed(msg)),
+        };
         if inner.is_closed {
             return Err(TrySendError::Closed(msg));
         } else if inner.receiver_count == 0 && inner.open_channel {
@@ -573,7 +576,10 @@ impl<T: Clone> Sender<T> {
 
 impl<T> Drop for Sender<T> {
     fn drop(&mut self) {
-        let mut inner = self.inner.lock().unwrap();
+        let mut inner = match self.inner.lock() {
+            Ok(i) => i,
+            Err(_) => return,
+        };
         inner.sender_count -= 1;
 
         if inner.sender_count == 0 {
@@ -832,20 +838,6 @@ impl<T> Receiver<T> {
     pub fn sender_count(&self) -> usize {
         self.inner.lock().unwrap().sender_count
     }
-
-    fn sync_recv_count(&mut self) {
-        let inner = self.inner.lock().unwrap();
-
-        if inner.send_count < self.last_send_count {
-            // This means channel shrank so we need to adjust the `self.recv_count`.
-            self.recv_count = self.recv_count.saturating_sub(self.last_send_count - inner.send_count);
-        }
-        self.last_send_count = inner.send_count;
-
-        assert!(inner.replaced_count >= self.last_replaced_count);
-        self.recv_count = self.recv_count.saturating_sub(inner.replaced_count - self.last_replaced_count);
-        self.last_replaced_count = inner.replaced_count;
-    }
 }
 
 impl<T: Clone> Receiver<T> {
@@ -906,10 +898,23 @@ impl<T: Clone> Receiver<T> {
     /// # });
     /// ```
     pub fn try_recv(&mut self) -> Result<T, TryRecvError> {
-        self.sync_recv_count();
-        let mut inner = self.inner.lock().unwrap();
+        let mut inner = match self.inner.lock() {
+            Ok(i) => i,
+            Err(_) => return Err(TryRecvError::Closed),
+        };
+
+        if inner.send_count < self.last_send_count {
+            // This means channel shrank so we need to adjust the `self.recv_count`.
+            self.recv_count = self.recv_count.saturating_sub(self.last_send_count - inner.send_count);
+        }
+        self.last_send_count = inner.send_count;
+
+        assert!(inner.replaced_count >= self.last_replaced_count);
+        self.recv_count = self.recv_count.saturating_sub(inner.replaced_count - self.last_replaced_count);
+        self.last_replaced_count = inner.replaced_count;
+
         let msg_count = inner.send_count - self.recv_count;
-        if msg_count == 0 {
+        if msg_count == 0 || inner.queue.is_empty() {
             if inner.is_closed {
                 return Err(TryRecvError::Closed);
             } else {
@@ -935,8 +940,21 @@ impl<T: Clone> Receiver<T> {
 
 impl<T> Drop for Receiver<T> {
     fn drop(&mut self) {
-        self.sync_recv_count();
-        let mut inner = self.inner.lock().unwrap();
+        let mut inner = match self.inner.lock() {
+            Ok(i) => i,
+            Err(_) => return,
+        };
+
+        if inner.send_count < self.last_send_count {
+            // This means channel shrank so we need to adjust the `self.recv_count`.
+            self.recv_count = self.recv_count.saturating_sub(self.last_send_count - inner.send_count);
+        }
+        self.last_send_count = inner.send_count;
+
+        assert!(inner.replaced_count >= self.last_replaced_count);
+        self.recv_count = self.recv_count.saturating_sub(inner.replaced_count - self.last_replaced_count);
+        self.last_replaced_count = inner.replaced_count;
+
         let msg_count = inner.send_count - self.recv_count;
         let len = inner.queue.len();
         let msg_index = len.saturating_sub(msg_count);
@@ -1011,7 +1029,10 @@ impl<T: Clone> Stream for Receiver<T> {
                     None => {
                         // Start listening and then try receiving again.
                         self.listener = {
-                            let inner = self.inner.lock().unwrap();
+                            let inner = match self.inner.lock() {
+                                Ok(i) => i,
+                                Err(_) => return Poll::Ready(None),
+                            };
 
                             Some(inner.recv_ops.listen())
                         };
@@ -1272,7 +1293,10 @@ impl<'a, T: Clone> Future for Recv<'a, T> {
                 None => {
                     // Start listening and then try receiving again.
                     this.listener = {
-                        let inner = this.receiver.inner.lock().unwrap();
+                        let inner = match this.receiver.inner.lock() {
+                            Ok(i) => i,
+                            Err(_) => return Poll::Ready(Err(RecvError)),
+                        };
 
                         Some(inner.recv_ops.listen())
                     };
