@@ -543,7 +543,10 @@ impl<T: Clone> Sender<T> {
     /// ```
     pub fn try_broadcast(&self, msg: T) -> Result<Option<T>, TrySendError<T>> {
         let mut ret = None;
-        let mut inner = self.inner.lock().unwrap();
+        let mut inner = match self.inner.lock() {
+            Ok(i) => i,
+            Err(_) => return Err(TrySendError::Closed(msg)),
+        };
         if inner.is_closed {
             return Err(TrySendError::Closed(msg));
         } else if inner.receiver_count == 0 && inner.open_channel {
@@ -895,7 +898,10 @@ impl<T: Clone> Receiver<T> {
     /// # });
     /// ```
     pub fn try_recv(&mut self) -> Result<T, TryRecvError> {
-        let mut inner = self.inner.lock().unwrap();
+        let mut inner = match self.inner.lock() {
+            Ok(i) => i,
+            Err(_) => return Err(TryRecvError::Closed),
+        };
 
         if inner.send_count < self.last_send_count {
             // This means channel shrank so we need to adjust the `self.recv_count`.
@@ -1023,7 +1029,10 @@ impl<T: Clone> Stream for Receiver<T> {
                     None => {
                         // Start listening and then try receiving again.
                         self.listener = {
-                            let inner = self.inner.lock().unwrap();
+                            let inner = match self.inner.lock() {
+                                Ok(i) => i,
+                                Err(_) => return Poll::Ready(None),
+                            };
 
                             Some(inner.recv_ops.listen())
                         };
@@ -1284,7 +1293,10 @@ impl<'a, T: Clone> Future for Recv<'a, T> {
                 None => {
                     // Start listening and then try receiving again.
                     this.listener = {
-                        let inner = this.receiver.inner.lock().unwrap();
+                        let inner = match this.receiver.inner.lock() {
+                            Ok(i) => i,
+                            Err(_) => return Poll::Ready(Err(RecvError)),
+                        };
 
                         Some(inner.recv_ops.listen())
                     };
