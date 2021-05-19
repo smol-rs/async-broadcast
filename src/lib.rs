@@ -573,7 +573,10 @@ impl<T: Clone> Sender<T> {
 
 impl<T> Drop for Sender<T> {
     fn drop(&mut self) {
-        let mut inner = self.inner.lock().unwrap();
+        let mut inner = match self.inner.lock() {
+            Ok(i) => i,
+            Err(_) => return,
+        };
         inner.sender_count -= 1;
 
         if inner.sender_count == 0 {
@@ -832,20 +835,6 @@ impl<T> Receiver<T> {
     pub fn sender_count(&self) -> usize {
         self.inner.lock().unwrap().sender_count
     }
-
-    fn sync_recv_count(&mut self) {
-        let inner = self.inner.lock().unwrap();
-
-        if inner.send_count < self.last_send_count {
-            // This means channel shrank so we need to adjust the `self.recv_count`.
-            self.recv_count = self.recv_count.saturating_sub(self.last_send_count - inner.send_count);
-        }
-        self.last_send_count = inner.send_count;
-
-        assert!(inner.replaced_count >= self.last_replaced_count);
-        self.recv_count = self.recv_count.saturating_sub(inner.replaced_count - self.last_replaced_count);
-        self.last_replaced_count = inner.replaced_count;
-    }
 }
 
 impl<T: Clone> Receiver<T> {
@@ -906,8 +895,18 @@ impl<T: Clone> Receiver<T> {
     /// # });
     /// ```
     pub fn try_recv(&mut self) -> Result<T, TryRecvError> {
-        self.sync_recv_count();
         let mut inner = self.inner.lock().unwrap();
+
+        if inner.send_count < self.last_send_count {
+            // This means channel shrank so we need to adjust the `self.recv_count`.
+            self.recv_count = self.recv_count.saturating_sub(self.last_send_count - inner.send_count);
+        }
+        self.last_send_count = inner.send_count;
+
+        assert!(inner.replaced_count >= self.last_replaced_count);
+        self.recv_count = self.recv_count.saturating_sub(inner.replaced_count - self.last_replaced_count);
+        self.last_replaced_count = inner.replaced_count;
+
         let msg_count = inner.send_count - self.recv_count;
         if msg_count == 0 {
             if inner.is_closed {
@@ -935,8 +934,21 @@ impl<T: Clone> Receiver<T> {
 
 impl<T> Drop for Receiver<T> {
     fn drop(&mut self) {
-        self.sync_recv_count();
-        let mut inner = self.inner.lock().unwrap();
+        let mut inner = match self.inner.lock() {
+            Ok(i) => i,
+            Err(_) => return,
+        };
+
+        if inner.send_count < self.last_send_count {
+            // This means channel shrank so we need to adjust the `self.recv_count`.
+            self.recv_count = self.recv_count.saturating_sub(self.last_send_count - inner.send_count);
+        }
+        self.last_send_count = inner.send_count;
+
+        assert!(inner.replaced_count >= self.last_replaced_count);
+        self.recv_count = self.recv_count.saturating_sub(inner.replaced_count - self.last_replaced_count);
+        self.last_replaced_count = inner.replaced_count;
+
         let msg_count = inner.send_count - self.recv_count;
         let len = inner.queue.len();
         let msg_index = len.saturating_sub(msg_count);
