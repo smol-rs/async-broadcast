@@ -400,21 +400,45 @@ impl<T> Sender<T> {
 
     /// Returns the number of receivers for the channel.
     ///
+    /// This does not include inactive receivers. Use [`Sender::inactive_receiver_count`] if you
+    /// are interested in that.
+    ///
     /// # Examples
     ///
     /// ```
-    /// # futures_lite::future::block_on(async {
     /// use async_broadcast::broadcast;
     ///
     /// let (s, r) = broadcast::<()>(1);
     /// assert_eq!(s.receiver_count(), 1);
+    /// let r = r.deactivate();
+    /// assert_eq!(s.receiver_count(), 0);
     ///
-    /// let r2 = r.clone();
-    /// assert_eq!(s.receiver_count(), 2);
-    /// # });
+    /// let r2 = r.activate_cloned();
+    /// assert_eq!(r.receiver_count(), 1);
+    /// assert_eq!(r.inactive_receiver_count(), 1);
     /// ```
     pub fn receiver_count(&self) -> usize {
         self.inner.lock().unwrap().receiver_count
+    }
+
+    /// Returns the number of inactive receivers for the channel.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use async_broadcast::broadcast;
+    ///
+    /// let (s, r) = broadcast::<()>(1);
+    /// assert_eq!(s.receiver_count(), 1);
+    /// let r = r.deactivate();
+    /// assert_eq!(s.receiver_count(), 0);
+    ///
+    /// let r2 = r.activate_cloned();
+    /// assert_eq!(r.receiver_count(), 1);
+    /// assert_eq!(r.inactive_receiver_count(), 1);
+    /// ```
+    pub fn inactive_receiver_count(&self) -> usize {
+        self.inner.lock().unwrap().disabled_receiver_count
     }
 
     /// Returns the number of senders for the channel.
@@ -759,21 +783,45 @@ impl<T> Receiver<T> {
 
     /// Returns the number of receivers for the channel.
     ///
+    /// This does not include inactive receivers. Use [`Receiver::inactive_receiver_count`] if you
+    /// are interested in that.
+    ///
     /// # Examples
     ///
     /// ```
-    /// # futures_lite::future::block_on(async {
     /// use async_broadcast::broadcast;
     ///
     /// let (s, r) = broadcast::<()>(1);
     /// assert_eq!(s.receiver_count(), 1);
+    /// let r = r.deactivate();
+    /// assert_eq!(s.receiver_count(), 0);
     ///
-    /// let r2 = r.clone();
-    /// assert_eq!(s.receiver_count(), 2);
-    /// # });
+    /// let r2 = r.activate_cloned();
+    /// assert_eq!(r.receiver_count(), 1);
+    /// assert_eq!(r.inactive_receiver_count(), 1);
     /// ```
     pub fn receiver_count(&self) -> usize {
         self.inner.lock().unwrap().receiver_count
+    }
+
+    /// Returns the number of inactive receivers for the channel.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use async_broadcast::broadcast;
+    ///
+    /// let (s, r) = broadcast::<()>(1);
+    /// assert_eq!(s.receiver_count(), 1);
+    /// let r = r.deactivate();
+    /// assert_eq!(s.receiver_count(), 0);
+    ///
+    /// let r2 = r.activate_cloned();
+    /// assert_eq!(r.receiver_count(), 1);
+    /// assert_eq!(r.inactive_receiver_count(), 1);
+    /// ```
+    pub fn inactive_receiver_count(&self) -> usize {
+        self.inner.lock().unwrap().disabled_receiver_count
     }
 
     /// Returns the number of senders for the channel.
