@@ -113,7 +113,7 @@ pub fn broadcast<T>(cap: usize) -> (Sender<T>, Receiver<T>) {
         capacity: cap,
         overflow: false,
         receiver_count: 1,
-        disabled_receiver_count: 0,
+        inactive_receiver_count: 0,
         sender_count: 1,
         send_count: 0,
         replaced_count: 0,
@@ -143,7 +143,7 @@ struct Inner<T> {
     // the actual capacity could be anything. Hence the need to keep track of our own set capacity.
     capacity: usize,
     receiver_count: usize,
-    disabled_receiver_count: usize,
+    inactive_receiver_count: usize,
     sender_count: usize,
     send_count: usize,
     replaced_count: usize,
@@ -438,7 +438,7 @@ impl<T> Sender<T> {
     /// assert_eq!(r.inactive_receiver_count(), 1);
     /// ```
     pub fn inactive_receiver_count(&self) -> usize {
-        self.inner.lock().unwrap().disabled_receiver_count
+        self.inner.lock().unwrap().inactive_receiver_count
     }
 
     /// Returns the number of senders for the channel.
@@ -523,7 +523,7 @@ impl<T: Clone> Sender<T> {
         if inner.is_closed {
             return Err(TrySendError::Closed(msg));
         } else if inner.receiver_count == 0 {
-            assert!(inner.disabled_receiver_count != 0);
+            assert!(inner.inactive_receiver_count != 0);
 
             return Err(TrySendError::Inactive(msg));
         } else if inner.queue.len() == inner.capacity {
@@ -821,7 +821,7 @@ impl<T> Receiver<T> {
     /// assert_eq!(r.inactive_receiver_count(), 1);
     /// ```
     pub fn inactive_receiver_count(&self) -> usize {
-        self.inner.lock().unwrap().disabled_receiver_count
+        self.inner.lock().unwrap().inactive_receiver_count
     }
 
     /// Returns the number of senders for the channel.
@@ -871,7 +871,7 @@ impl<T> Receiver<T> {
     /// ```
     pub fn deactivate(self) -> InactiveReceiver<T> {
         // Drop::drop impl of Receiver will take care of `receiver_count`.
-        self.inner.lock().unwrap().disabled_receiver_count += 1;
+        self.inner.lock().unwrap().inactive_receiver_count += 1;
 
         InactiveReceiver {
             inner: self.inner.clone(),
@@ -1024,7 +1024,7 @@ impl<T> Drop for Receiver<T> {
         }
         inner.receiver_count -= 1;
 
-        if inner.receiver_count == 0 && inner.disabled_receiver_count == 0 {
+        if inner.receiver_count == 0 && inner.inactive_receiver_count == 0 {
             inner.close();
         }
     }
@@ -1545,7 +1545,7 @@ impl<T> InactiveReceiver<T> {
     /// assert_eq!(r.inactive_receiver_count(), 1);
     /// ```
     pub fn inactive_receiver_count(&self) -> usize {
-        self.inner.lock().unwrap().disabled_receiver_count
+        self.inner.lock().unwrap().inactive_receiver_count
     }
 
     /// Returns the number of senders for the channel.
@@ -1559,7 +1559,7 @@ impl<T> InactiveReceiver<T> {
 impl<T> Drop for InactiveReceiver<T> {
     fn drop(&mut self) {
         if let Ok(mut inner) = self.inner.lock() {
-            inner.disabled_receiver_count -= 1;
+            inner.inactive_receiver_count -= 1;
         }
     }
 }
