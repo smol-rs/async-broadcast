@@ -113,7 +113,7 @@ pub fn broadcast<T>(cap: usize) -> (Sender<T>, Receiver<T>) {
         capacity: cap,
         overflow: false,
         receiver_count: 1,
-        disabled_receiver_count: 0,
+        inactive_receiver_count: 0,
         sender_count: 1,
         send_count: 0,
         replaced_count: 0,
@@ -143,7 +143,7 @@ struct Inner<T> {
     // the actual capacity could be anything. Hence the need to keep track of our own set capacity.
     capacity: usize,
     receiver_count: usize,
-    disabled_receiver_count: usize,
+    inactive_receiver_count: usize,
     sender_count: usize,
     send_count: usize,
     replaced_count: usize,
@@ -400,21 +400,45 @@ impl<T> Sender<T> {
 
     /// Returns the number of receivers for the channel.
     ///
+    /// This does not include inactive receivers. Use [`Sender::inactive_receiver_count`] if you
+    /// are interested in that.
+    ///
     /// # Examples
     ///
     /// ```
-    /// # futures_lite::future::block_on(async {
     /// use async_broadcast::broadcast;
     ///
     /// let (s, r) = broadcast::<()>(1);
     /// assert_eq!(s.receiver_count(), 1);
+    /// let r = r.deactivate();
+    /// assert_eq!(s.receiver_count(), 0);
     ///
-    /// let r2 = r.clone();
-    /// assert_eq!(s.receiver_count(), 2);
-    /// # });
+    /// let r2 = r.activate_cloned();
+    /// assert_eq!(r.receiver_count(), 1);
+    /// assert_eq!(r.inactive_receiver_count(), 1);
     /// ```
     pub fn receiver_count(&self) -> usize {
         self.inner.lock().unwrap().receiver_count
+    }
+
+    /// Returns the number of inactive receivers for the channel.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use async_broadcast::broadcast;
+    ///
+    /// let (s, r) = broadcast::<()>(1);
+    /// assert_eq!(s.receiver_count(), 1);
+    /// let r = r.deactivate();
+    /// assert_eq!(s.receiver_count(), 0);
+    ///
+    /// let r2 = r.activate_cloned();
+    /// assert_eq!(r.receiver_count(), 1);
+    /// assert_eq!(r.inactive_receiver_count(), 1);
+    /// ```
+    pub fn inactive_receiver_count(&self) -> usize {
+        self.inner.lock().unwrap().inactive_receiver_count
     }
 
     /// Returns the number of senders for the channel.
@@ -499,7 +523,7 @@ impl<T: Clone> Sender<T> {
         if inner.is_closed {
             return Err(TrySendError::Closed(msg));
         } else if inner.receiver_count == 0 {
-            assert!(inner.disabled_receiver_count != 0);
+            assert!(inner.inactive_receiver_count != 0);
 
             return Err(TrySendError::Inactive(msg));
         } else if inner.queue.len() == inner.capacity {
@@ -759,21 +783,45 @@ impl<T> Receiver<T> {
 
     /// Returns the number of receivers for the channel.
     ///
+    /// This does not include inactive receivers. Use [`Receiver::inactive_receiver_count`] if you
+    /// are interested in that.
+    ///
     /// # Examples
     ///
     /// ```
-    /// # futures_lite::future::block_on(async {
     /// use async_broadcast::broadcast;
     ///
     /// let (s, r) = broadcast::<()>(1);
     /// assert_eq!(s.receiver_count(), 1);
+    /// let r = r.deactivate();
+    /// assert_eq!(s.receiver_count(), 0);
     ///
-    /// let r2 = r.clone();
-    /// assert_eq!(s.receiver_count(), 2);
-    /// # });
+    /// let r2 = r.activate_cloned();
+    /// assert_eq!(r.receiver_count(), 1);
+    /// assert_eq!(r.inactive_receiver_count(), 1);
     /// ```
     pub fn receiver_count(&self) -> usize {
         self.inner.lock().unwrap().receiver_count
+    }
+
+    /// Returns the number of inactive receivers for the channel.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use async_broadcast::broadcast;
+    ///
+    /// let (s, r) = broadcast::<()>(1);
+    /// assert_eq!(s.receiver_count(), 1);
+    /// let r = r.deactivate();
+    /// assert_eq!(s.receiver_count(), 0);
+    ///
+    /// let r2 = r.activate_cloned();
+    /// assert_eq!(r.receiver_count(), 1);
+    /// assert_eq!(r.inactive_receiver_count(), 1);
+    /// ```
+    pub fn inactive_receiver_count(&self) -> usize {
+        self.inner.lock().unwrap().inactive_receiver_count
     }
 
     /// Returns the number of senders for the channel.
@@ -823,7 +871,7 @@ impl<T> Receiver<T> {
     /// ```
     pub fn deactivate(self) -> InactiveReceiver<T> {
         // Drop::drop impl of Receiver will take care of `receiver_count`.
-        self.inner.lock().unwrap().disabled_receiver_count += 1;
+        self.inner.lock().unwrap().inactive_receiver_count += 1;
 
         InactiveReceiver {
             inner: self.inner.clone(),
@@ -976,7 +1024,7 @@ impl<T> Drop for Receiver<T> {
         }
         inner.receiver_count -= 1;
 
-        if inner.receiver_count == 0 && inner.disabled_receiver_count == 0 {
+        if inner.receiver_count == 0 && inner.inactive_receiver_count == 0 {
             inner.close();
         }
     }
@@ -1380,12 +1428,138 @@ impl<T> InactiveReceiver<T> {
             listener: None,
         }
     }
+
+    /// Returns the channel capacity.
+    ///
+    /// See [`Receiver::capacity`] documentation for examples.
+    pub fn capacity(&self) -> usize {
+        self.inner.lock().unwrap().capacity
+    }
+
+    /// Set the channel capacity.
+    ///
+    /// There are times when you need to change the channel's capacity after creating it. If the
+    /// `new_cap` is less than the number of messages in the channel, the oldest messages will be
+    /// dropped to shrink the channel.
+    ///
+    /// See [`Receiver::set_capacity`] documentation for examples.
+    pub fn set_capacity(&mut self, new_cap: usize) {
+        self.inner.lock().unwrap().set_capacity(new_cap);
+    }
+
+    /// If overflow mode is enabled on this channel.
+    ///
+    /// See [`Receiver::overflow`] documentation for examples.
+    pub fn overflow(&self) -> bool {
+        self.inner.lock().unwrap().overflow
+    }
+
+    /// Set overflow mode on the channel.
+    ///
+    /// When overflow mode is set, broadcasting to the channel will succeed even if the channel is
+    /// full. It achieves that by removing the oldest message from the channel.
+    ///
+    /// See [`Receiver::set_overflow`] documentation for examples.
+    pub fn set_overflow(&mut self, overflow: bool) {
+        self.inner.lock().unwrap().overflow = overflow;
+    }
+
+    /// Closes the channel.
+    ///
+    /// Returns `true` if this call has closed the channel and it was not closed already.
+    ///
+    /// The remaining messages can still be received.
+    ///
+    /// See [`Receiver::close`] documentation for examples.
+    pub fn close(&self) -> bool {
+        self.inner.lock().unwrap().close()
+    }
+
+    /// Returns `true` if the channel is closed.
+    ///
+    /// See [`Receiver::is_closed`] documentation for examples.
+    pub fn is_closed(&self) -> bool {
+        self.inner.lock().unwrap().is_closed
+    }
+
+    /// Returns `true` if the channel is empty.
+    ///
+    /// See [`Receiver::is_empty`] documentation for examples.
+    pub fn is_empty(&self) -> bool {
+        self.inner.lock().unwrap().queue.is_empty()
+    }
+
+    /// Returns `true` if the channel is full.
+    ///
+    /// See [`Receiver::is_full`] documentation for examples.
+    pub fn is_full(&self) -> bool {
+        let inner = self.inner.lock().unwrap();
+
+        inner.queue.len() == inner.capacity
+    }
+
+    /// Returns the number of messages in the channel.
+    ///
+    /// See [`Receiver::len`] documentation for examples.
+    pub fn len(&self) -> usize {
+        self.inner.lock().unwrap().queue.len()
+    }
+
+    /// Returns the number of receivers for the channel.
+    ///
+    /// This does not include inactive receivers. Use [`InactiveReceiver::inactive_receiver_count`]
+    /// if you're interested in that.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use async_broadcast::broadcast;
+    ///
+    /// let (s, r) = broadcast::<()>(1);
+    /// assert_eq!(s.receiver_count(), 1);
+    /// let r = r.deactivate();
+    /// assert_eq!(s.receiver_count(), 0);
+    ///
+    /// let r2 = r.activate_cloned();
+    /// assert_eq!(r.receiver_count(), 1);
+    /// assert_eq!(r.inactive_receiver_count(), 1);
+    /// ```
+    pub fn receiver_count(&self) -> usize {
+        self.inner.lock().unwrap().receiver_count
+    }
+
+    /// Returns the number of inactive receivers for the channel.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use async_broadcast::broadcast;
+    ///
+    /// let (s, r) = broadcast::<()>(1);
+    /// assert_eq!(s.receiver_count(), 1);
+    /// let r = r.deactivate();
+    /// assert_eq!(s.receiver_count(), 0);
+    ///
+    /// let r2 = r.activate_cloned();
+    /// assert_eq!(r.receiver_count(), 1);
+    /// assert_eq!(r.inactive_receiver_count(), 1);
+    /// ```
+    pub fn inactive_receiver_count(&self) -> usize {
+        self.inner.lock().unwrap().inactive_receiver_count
+    }
+
+    /// Returns the number of senders for the channel.
+    ///
+    /// See [`Receiver::sender_count`] documentation for examples.
+    pub fn sender_count(&self) -> usize {
+        self.inner.lock().unwrap().sender_count
+    }
 }
 
 impl<T> Drop for InactiveReceiver<T> {
     fn drop(&mut self) {
         if let Ok(mut inner) = self.inner.lock() {
-            inner.disabled_receiver_count -= 1;
+            inner.inactive_receiver_count -= 1;
         }
     }
 }
