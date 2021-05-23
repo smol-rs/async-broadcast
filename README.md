@@ -22,15 +22,6 @@ closed, no more messages can be sent, but remaining messages can still be receiv
 The channel can also be closed manually by calling `Sender::close()` or
 `Receiver::close()`.
 
-## Difference with `async-channel`
-
-This crate is similar to [`async-channel`] in that they both provide an MPMC channel but the main
-difference being that in `async-channel`, each message sent on the channel is only received by one
-of the receivers. `async-broadcast` on the other hand, delivers each message to every receiver
-(IOW broadcast) by cloning it for each receiver.
-
-[`async-channel`]: https://crates.io/crates/async-channel
-
 ## Examples
 
 ```rust
@@ -68,6 +59,15 @@ block_on(async move {
     assert_eq!(r2.try_recv(), Err(TryRecvError::Closed));
 })
 ```
+
+## Difference with `async-channel`
+
+This crate is similar to [`async-channel`] in that they both provide an MPMC channel but the main
+difference being that in `async-channel`, each message sent on the channel is only received by one
+of the receivers. `async-broadcast` on the other hand, delivers each message to every receiver
+(IOW broadcast) by cloning it for each receiver.
+
+[`async-channel`]: https://crates.io/crates/async-channel
 
 ## Safety
 This crate uses ``#![deny(unsafe_code)]`` to ensure everything is implemented in
