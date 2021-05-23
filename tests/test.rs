@@ -275,3 +275,12 @@ fn open_channel() {
         })
         .run();
 }
+
+#[test]
+fn inactive_drop() {
+    let (_, active_receiver) = broadcast::<()>(1);
+    let inactive = active_receiver.deactivate();
+    let inactive2 = inactive.clone();
+    drop(inactive);
+    drop(inactive2);
+}
