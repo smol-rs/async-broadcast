@@ -58,7 +58,39 @@
 //! receiver (IOW broadcast) by cloning it for each receiver.
 //!
 //! [`async-channel`]: https://crates.io/crates/async-channel
-
+//!
+//! ## Difference with other broadcast crates
+//!
+//! * [`broadcaster`]: The main difference would be that `broadcaster` doesn't have a sender and
+//!   receiver split and both sides use clones of the same BroadcastChannel instance. The messages
+//!   are sent are sent to all channel clones. While this can work for many cases, the lack of
+//!   sender and receiver split, means that often times, you'll find yourself having to drain the
+//!   channel on the sending side yourself.
+//!
+//! * [`postage`]: this crate provides a [broadcast API][pba] similar to `async_broadcast`. However,
+//!   it:
+//!   - (at the time of this writing) duplicates [futures] API, which isn't ideal.
+//!   - Does not support overflow mode nor has the concept of inactive receivers, so a slow or
+//!     inactive receiver blocking the whole channel is not a solvable problem.
+//!   - Provides all kinds of channels, which is generally good but if you just need a broadcast
+//!     channel, `async_broadcast` is probably a better choice.
+//!
+//! * [`tokio::sync`]: Tokio's `sync` module provides a [broadcast channel][tbc] API. The differences
+//!    here are:
+//!   - While this implementation does provide [overflow mode][tom], it is the default behavior and not
+//!     opt-in.
+//!   - There is no equivalent of inactive receivers.
+//!   - While it's possible to build tokio with only the `sync` module, it comes with other APIs that
+//!     you may not need.
+//!
+//! [`broadcaster`]: https://crates.io/crates/broadcaster
+//! [`postage`]: https://crates.io/crates/postage
+//! [pba]: https://docs.rs/postage/0.4.1/postage/broadcast/fn.channel.html
+//! [futures]: https://crates.io/crates/futures
+//! [`tokio::sync`]: https://docs.rs/tokio/1.6.0/tokio/sync
+//! [tbc]: https://docs.rs/tokio/1.6.0/tokio/sync/broadcast/index.html
+//! [tom]: https://docs.rs/tokio/1.6.0/tokio/sync/broadcast/index.html#lagging
+//!
 #![forbid(unsafe_code, future_incompatible, rust_2018_idioms)]
 #![deny(missing_debug_implementations, nonstandard_style)]
 #![warn(missing_docs, missing_doc_code_examples, unreachable_pub)]
