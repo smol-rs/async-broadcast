@@ -1368,7 +1368,7 @@ impl<'a, T: Clone> Future for Recv<'a, T> {
 ///
 /// An inactive receiver is a receiver that is unable to receive messages. It's only useful for
 /// keeping a channel open even when no associated active receivers exist.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct InactiveReceiver<T> {
     inner: Arc<Mutex<Inner<T>>>,
 }
@@ -1553,6 +1553,18 @@ impl<T> InactiveReceiver<T> {
     /// See [`Receiver::sender_count`] documentation for examples.
     pub fn sender_count(&self) -> usize {
         self.inner.lock().unwrap().sender_count
+    }
+}
+
+impl<T> Clone for InactiveReceiver<T> {
+    fn clone(&self) -> Self {
+        if let Ok(mut inner) = self.inner.lock() {
+            inner.inactive_receiver_count += 1;
+        }
+
+        InactiveReceiver {
+            inner: self.inner.clone(),
+        }
     }
 }
 
