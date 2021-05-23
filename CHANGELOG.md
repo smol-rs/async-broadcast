@@ -1,3 +1,8 @@
+# Version 0.3.2
+
+- Fix a underflow panic (#14).
+- Document difference with other broadcast APIs.
+
 # Version 0.3.1
 
 - Channel API in InactiveReceiver (#11).
