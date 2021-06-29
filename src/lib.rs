@@ -105,7 +105,7 @@ use std::error;
 use std::fmt;
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::task::{Context, Poll};
 
 use event_listener::{Event, EventListener};
@@ -1056,9 +1056,7 @@ impl<T> Drop for Receiver<T> {
         }
         inner.receiver_count -= 1;
 
-        if inner.receiver_count == 0 && inner.inactive_receiver_count == 0 {
-            inner.close();
-        }
+        close_channel_if_last_receiver(&mut inner);
     }
 }
 
@@ -1604,6 +1602,14 @@ impl<T> Drop for InactiveReceiver<T> {
     fn drop(&mut self) {
         if let Ok(mut inner) = self.inner.lock() {
             inner.inactive_receiver_count -= 1;
+
+            close_channel_if_last_receiver(&mut inner);
         }
+    }
+}
+
+fn close_channel_if_last_receiver<T>(inner: &mut MutexGuard<'_, Inner<T>>) {
+    if inner.receiver_count == 0 && inner.inactive_receiver_count == 0 {
+        inner.close();
     }
 }
