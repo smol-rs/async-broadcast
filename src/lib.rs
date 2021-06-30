@@ -228,7 +228,7 @@ impl<T> Inner<T> {
     }
 
     /// Close the channel if there aren't any receivers present anymore
-    fn close_channel_if_no_receiver(&mut self) {
+    fn close_channel(&mut self) {
         if self.receiver_count == 0 && self.inactive_receiver_count == 0 {
             self.close();
         }
@@ -1063,7 +1063,7 @@ impl<T> Drop for Receiver<T> {
         }
         inner.receiver_count -= 1;
 
-        inner.close_channel_if_no_receiver();
+        inner.close_channel();
     }
 }
 
@@ -1610,7 +1610,7 @@ impl<T> Drop for InactiveReceiver<T> {
         if let Ok(mut inner) = self.inner.lock() {
             inner.inactive_receiver_count -= 1;
 
-            inner.close_channel_if_no_receiver();
+            inner.close_channel();
         }
     }
 }
