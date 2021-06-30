@@ -226,6 +226,13 @@ impl<T> Inner<T> {
             self.send_count -= diff;
         }
     }
+
+    /// Close the channel if there aren't any receivers present anymore
+    fn close_channel(&mut self) {
+        if self.receiver_count == 0 && self.inactive_receiver_count == 0 {
+            self.close();
+        }
+    }
 }
 
 /// The sending side of the broadcast channel.
@@ -1056,9 +1063,7 @@ impl<T> Drop for Receiver<T> {
         }
         inner.receiver_count -= 1;
 
-        if inner.receiver_count == 0 && inner.inactive_receiver_count == 0 {
-            inner.close();
-        }
+        inner.close_channel();
     }
 }
 
@@ -1604,6 +1609,8 @@ impl<T> Drop for InactiveReceiver<T> {
     fn drop(&mut self) {
         if let Ok(mut inner) = self.inner.lock() {
             inner.inactive_receiver_count -= 1;
+
+            inner.close_channel();
         }
     }
 }
