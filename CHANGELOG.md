@@ -1,3 +1,7 @@
+# Version 0.3.3
+
+- Close channel if the last receiver to drop is inactive.
+
 # Version 0.3.2
 
 - Fix a underflow panic (#14).
