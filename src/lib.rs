@@ -109,7 +109,7 @@ use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll};
 
 use event_listener::{Event, EventListener};
-use futures_core::stream::Stream;
+use futures_core::{ready, stream::Stream};
 
 /// Create a new broadcast channel.
 ///
@@ -1088,7 +1088,7 @@ impl<T: Clone> Stream for Receiver<T> {
         loop {
             // If this stream is listening for events, first wait for a notification.
             if let Some(listener) = self.listener.as_mut() {
-                futures_core::ready!(Pin::new(listener).poll(cx));
+                ready!(Pin::new(listener).poll(cx));
                 self.listener = None;
             }
 
@@ -1334,14 +1334,8 @@ impl<'a, T: Clone> Future for Send<'a, T> {
                 }
                 Some(l) => {
                     // Wait for a notification.
-                    match Pin::new(l).poll(cx) {
-                        Poll::Ready(_) => {
-                            this.listener = None;
-                            continue;
-                        }
-
-                        Poll::Pending => return Poll::Pending,
-                    }
+                    ready!(Pin::new(l).poll(cx));
+                    this.listener = None;
                 }
             }
         }
@@ -1387,14 +1381,8 @@ impl<'a, T: Clone> Future for Recv<'a, T> {
                 }
                 Some(l) => {
                     // Wait for a notification.
-                    match Pin::new(l).poll(cx) {
-                        Poll::Ready(_) => {
-                            this.listener = None;
-                            continue;
-                        }
-
-                        Poll::Pending => return Poll::Pending,
-                    }
+                    ready!(Pin::new(l).poll(cx));
+                    this.listener = None;
                 }
             }
         }
