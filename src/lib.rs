@@ -1004,17 +1004,30 @@ impl<T: Clone> Receiver<T> {
             }
         }
         let msg_index = inner.queue.len().saturating_sub(msg_count);
-        let msg = inner.queue[msg_index].0.clone();
-        inner.queue[msg_index].1 -= 1;
-        if inner.queue[msg_index].1 == 0 {
-            inner.queue.pop_front();
-
+        // If we read from the front of the queue and this is the last receiver reading it
+        // we can pop the queue instead of cloning the message
+        let msg = if msg_index == 0 && inner.queue[msg_index].1 == 1 {
+            let msg = inner.queue.pop_front().unwrap().0;
             if !inner.overflow {
                 // Notify 1 awaiting senders that there is now room. If there is still room in the
                 // queue, the notified operation will notify another awaiting sender.
                 inner.send_ops.notify(1);
-            }
-        }
+            };
+            msg
+        } else {
+            let msg = inner.queue[msg_index].0.clone();
+            inner.queue[msg_index].1 -= 1;
+            if inner.queue[msg_index].1 == 0 {
+                inner.queue.pop_front();
+
+                if !inner.overflow {
+                    // Notify 1 awaiting senders that there is now room. If there is still room in the
+                    // queue, the notified operation will notify another awaiting sender.
+                    inner.send_ops.notify(1);
+                }
+            };
+            msg
+        };
         self.recv_count += 1;
         Ok(msg)
     }
