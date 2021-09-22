@@ -1,3 +1,8 @@
+# Version 0.3.4
+
+- Avoid the last clone in `try_recv` (#18).
+- Add some basic benchmarks.
+
 # Version 0.3.3
 
 - Close channel if the last receiver to drop is inactive.
