@@ -2,14 +2,15 @@ use event_listener::{Event, EventListener};
 use futures_core::ready;
 use std::collections::VecDeque;
 use std::convert::TryInto;
-use std::fmt::Debug;
+use std::error::Error;
+use std::fmt::{self, Debug, Display};
 use std::future::Future;
 use std::ops::{AddAssign, Deref, SubAssign};
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll};
 
-use crate::{RecvError, SendError, TryRecvError, TrySendError};
+use crate::{RecvError, TryRecvError, TrySendError};
 
 /// An object that produces weights for other objects
 pub trait Scale<T: ?Sized> {
@@ -321,14 +322,48 @@ impl<T, S: Scale<T>> Future for Send<T, S> {
             match item.take().map(|msg| inner.try_send(msg)) {
                 None => return Poll::Ready(Ok(())),
                 Some(Ok(())) => return Poll::Ready(Ok(())),
+                Some(Err(TrySendError::Full(msg))) if inner.queue.is_empty() => {
+                    inner.send_ops.notify(1);
+                    return Poll::Ready(Err(SendError::NoSpace(msg)));
+                }
                 Some(Err(TrySendError::Full(msg))) | Some(Err(TrySendError::Inactive(msg))) => {
                     *item = Some(msg);
                     *waiter = Some(inner.send_ops.listen());
                 }
                 Some(Err(TrySendError::Closed(msg))) => {
-                    return Poll::Ready(Err(SendError(msg)));
+                    return Poll::Ready(Err(SendError::Closed(msg)));
                 }
             }
+        }
+    }
+}
+
+/// An error returned from [`Sender::broadcast()`].
+#[derive(PartialEq, Eq, Clone, Copy)]
+pub enum SendError<T> {
+    /// The channel is closed
+    Closed(T),
+
+    /// The channel is empty, but still does not have the space to send this message
+    NoSpace(T),
+}
+
+impl<T> Error for SendError<T> {}
+
+impl<T> Debug for SendError<T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Closed(_) => write!(f, "SendError::Closed"),
+            Self::NoSpace(_) => write!(f, "SendError::NoSpace"),
+        }
+    }
+}
+
+impl<T> Display for SendError<T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Closed(_) => write!(f, "sending into a closed channel"),
+            Self::NoSpace(_) => write!(f, "sending into a channel without sufficient capacity"),
         }
     }
 }
