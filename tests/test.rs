@@ -135,8 +135,8 @@ fn parallel_async() {
                 assert_eq!(r1.recv().await.unwrap(), 10);
                 assert_eq!(r2.recv().await.unwrap(), 10);
 
-                assert_eq!(r1.recv().await, Err(RecvError));
-                assert_eq!(r2.recv().await, Err(RecvError));
+                assert_eq!(r1.recv().await, Err(RecvError::Closed));
+                assert_eq!(r2.recv().await, Err(RecvError::Closed));
             })
         })
         .run();
@@ -223,6 +223,7 @@ fn overflow() {
         })
         .run();
 
+    assert_eq!(r1.try_recv(), Err(TryRecvError::Overflowed));
     assert_eq!(r1.try_recv().unwrap(), 8);
     assert_eq!(r1.try_recv().unwrap(), 9);
 }

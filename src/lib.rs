@@ -326,6 +326,7 @@ impl<T> Sender<T> {
     /// assert_eq!(s.try_broadcast(3).unwrap(), Some(1));
     /// assert_eq!(s.try_broadcast(4).unwrap(), Some(2));
     ///
+    /// assert_eq!(r.try_recv(), Err(TryRecvError::Overflowed));
     /// assert_eq!(r.try_recv().unwrap(), 3);
     /// assert_eq!(r.try_recv().unwrap(), 4);
     /// assert_eq!(r.try_recv(), Err(TryRecvError::Empty));
@@ -351,7 +352,7 @@ impl<T> Sender<T> {
     /// assert!(s.close());
     ///
     /// assert_eq!(r.recv().await.unwrap(), 1);
-    /// assert_eq!(r.recv().await, Err(RecvError));
+    /// assert_eq!(r.recv().await, Err(RecvError::Closed));
     /// # });
     /// ```
     pub fn close(&self) -> bool {
@@ -709,6 +710,7 @@ impl<T> Receiver<T> {
     /// assert_eq!(s.try_broadcast(3).unwrap(), Some(1));
     /// assert_eq!(s.try_broadcast(4).unwrap(), Some(2));
     ///
+    /// assert_eq!(r.try_recv(), Err(TryRecvError::Overflowed));
     /// assert_eq!(r.try_recv().unwrap(), 3);
     /// assert_eq!(r.try_recv().unwrap(), 4);
     /// assert_eq!(r.try_recv(), Err(TryRecvError::Empty));
@@ -734,7 +736,7 @@ impl<T> Receiver<T> {
     /// assert!(s.close());
     ///
     /// assert_eq!(r.recv().await.unwrap(), 1);
-    /// assert_eq!(r.recv().await, Err(RecvError));
+    /// assert_eq!(r.recv().await, Err(RecvError::Closed));
     /// # });
     /// ```
     pub fn close(&self) -> bool {
@@ -926,6 +928,10 @@ impl<T: Clone> Receiver<T> {
     /// If the channel is closed, this method receives a message or returns an error if there are
     /// no more messages.
     ///
+    /// If this receiver has missed a message (only possible if overflow mode is enabled), then
+    /// this method returns an error and readjusts its cursor to point to the first available
+    /// message.
+    ///
     /// # Examples
     ///
     /// ```
@@ -939,9 +945,9 @@ impl<T: Clone> Receiver<T> {
     /// drop(s);
     ///
     /// assert_eq!(r1.recv().await, Ok(1));
-    /// assert_eq!(r1.recv().await, Err(RecvError));
+    /// assert_eq!(r1.recv().await, Err(RecvError::Closed));
     /// assert_eq!(r2.recv().await, Ok(1));
-    /// assert_eq!(r2.recv().await, Err(RecvError));
+    /// assert_eq!(r2.recv().await, Err(RecvError::Closed));
     /// # });
     /// ```
     pub fn recv(&mut self) -> Recv<'_, T> {
@@ -954,6 +960,10 @@ impl<T: Clone> Receiver<T> {
     /// Attempts to receive a message from the channel.
     ///
     /// If the channel is empty or closed, this method returns an error.
+    ///
+    /// If this receiver has missed a message (only possible if overflow mode is enabled), then
+    /// this method returns an error and readjusts its cursor to point to the first available
+    /// message.
     ///
     /// # Examples
     ///
@@ -990,10 +1000,23 @@ impl<T: Clone> Receiver<T> {
         self.last_send_count = inner.send_count;
 
         assert!(inner.replaced_count >= self.last_replaced_count);
-        self.recv_count = self
-            .recv_count
-            .saturating_sub(inner.replaced_count - self.last_replaced_count);
-        self.last_replaced_count = inner.replaced_count;
+        if inner.replaced_count != self.last_replaced_count {
+            // The channel lost some messages since we last checked it
+            let replaced = inner.replaced_count - self.last_replaced_count;
+            self.last_replaced_count = inner.replaced_count;
+
+            match self.recv_count.checked_sub(replaced) {
+                Some(new_count) => {
+                    // it only lost messages we've already seen
+                    self.recv_count = new_count;
+                }
+                None => {
+                    // jump forward
+                    self.recv_count = 0;
+                    return Err(TryRecvError::Overflowed);
+                }
+            }
+        }
 
         let msg_count = inner.send_count - self.recv_count;
         if msg_count == 0 || inner.queue.is_empty() {
@@ -1118,6 +1141,7 @@ impl<T: Clone> Stream for Receiver<T> {
                         self.listener = None;
                         return Poll::Ready(None);
                     }
+                    Err(TryRecvError::Overflowed) => continue,
                     Err(TryRecvError::Empty) => {}
                 }
 
@@ -1253,19 +1277,33 @@ impl<T> fmt::Display for TrySendError<T> {
 ///
 /// Received because the channel is empty and closed.
 #[derive(PartialEq, Eq, Clone, Copy, Debug)]
-pub struct RecvError;
+pub enum RecvError {
+    /// The channel has overflowed since the last element was seen.  Future recv operations will
+    /// succeed, but some messages have been skipped.
+    Overflowed,
+
+    /// The channel is empty and closed.
+    Closed,
+}
 
 impl error::Error for RecvError {}
 
 impl fmt::Display for RecvError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "receiving from an empty and closed channel")
+        match self {
+            Self::Overflowed => write!(f, "receiving skipped some messages"),
+            Self::Closed => write!(f, "receiving from an empty and closed channel"),
+        }
     }
 }
 
 /// An error returned from [`Receiver::try_recv()`].
 #[derive(PartialEq, Eq, Clone, Copy, Debug)]
 pub enum TryRecvError {
+    /// The channel has overflowed since the last element was seen.  Future recv operations will
+    /// succeed, but some messages have been skipped.
+    Overflowed,
+
     /// The channel is empty but not closed.
     Empty,
 
@@ -1279,6 +1317,7 @@ impl TryRecvError {
         match self {
             TryRecvError::Empty => true,
             TryRecvError::Closed => false,
+            TryRecvError::Overflowed => false,
         }
     }
 
@@ -1287,6 +1326,16 @@ impl TryRecvError {
         match self {
             TryRecvError::Empty => false,
             TryRecvError::Closed => true,
+            TryRecvError::Overflowed => false,
+        }
+    }
+
+    /// Returns `true` if this error indicates the receiver missed messages.
+    pub fn is_overflowed(&self) -> bool {
+        match self {
+            TryRecvError::Empty => false,
+            TryRecvError::Closed => false,
+            TryRecvError::Overflowed => true,
         }
     }
 }
@@ -1298,6 +1347,7 @@ impl fmt::Display for TryRecvError {
         match *self {
             TryRecvError::Empty => write!(f, "receiving from an empty channel"),
             TryRecvError::Closed => write!(f, "receiving from an empty and closed channel"),
+            TryRecvError::Overflowed => write!(f, "receiving operation observed an overflow"),
         }
     }
 }
@@ -1375,7 +1425,8 @@ impl<'a, T: Clone> Future for Recv<'a, T> {
             // Attempt to receive a message.
             match this.receiver.try_recv() {
                 Ok(msg) => return Poll::Ready(Ok(msg)),
-                Err(TryRecvError::Closed) => return Poll::Ready(Err(RecvError)),
+                Err(TryRecvError::Closed) => return Poll::Ready(Err(RecvError::Closed)),
+                Err(TryRecvError::Overflowed) => return Poll::Ready(Err(RecvError::Overflowed)),
                 Err(TryRecvError::Empty) => {}
             }
 
@@ -1386,7 +1437,7 @@ impl<'a, T: Clone> Future for Recv<'a, T> {
                     this.listener = {
                         let inner = match this.receiver.inner.lock() {
                             Ok(i) => i,
-                            Err(_) => return Poll::Ready(Err(RecvError)),
+                            Err(_) => return Poll::Ready(Err(RecvError::Closed)),
                         };
 
                         Some(inner.recv_ops.listen())
