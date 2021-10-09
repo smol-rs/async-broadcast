@@ -1,5 +1,5 @@
 use event_listener::{Event, EventListener};
-use futures_core::ready;
+use futures_core::{ready, stream::Stream};
 use std::collections::VecDeque;
 use std::convert::TryInto;
 use std::error::Error;
@@ -61,6 +61,7 @@ pub struct Sender<T, S: Scale<T>> {
 pub struct Receiver<T, S: Scale<T>> {
     inner: Arc<Mutex<Inner<T, S>>>,
     pos: u64,
+    waiter: Option<EventListener>,
 }
 
 /// Create a new broadcast channel with the given scale and capacity.
@@ -109,7 +110,11 @@ pub fn weighted_broadcaster<T, S: Scale<T>>(
         Sender {
             inner: inner.clone(),
         },
-        Receiver { inner, pos: 0 },
+        Receiver {
+            inner,
+            pos: 0,
+            waiter: None,
+        },
     )
 }
 
@@ -122,7 +127,11 @@ impl<T, S: Scale<T>> Inner<T, S> {
     fn new_receiver(&mut self, inner: Arc<Mutex<Self>>) -> Receiver<T, S> {
         self.receiver_count += 1;
         let pos = self.head_pos + self.queue.len() as u64;
-        Receiver { inner, pos }
+        Receiver {
+            inner,
+            pos,
+            waiter: None,
+        }
     }
 
     fn try_send(&mut self, msg: T) -> Result<(), TrySendError<T>> {
@@ -372,7 +381,6 @@ impl<T> Display for SendError<T> {
 #[derive(Debug)]
 pub struct Recv<'a, T, S: Scale<T>> {
     recv: &'a mut Receiver<T, S>,
-    waiter: Option<EventListener>,
 }
 
 impl<'a, T, S: Scale<T>> Unpin for Recv<'a, T, S> {}
@@ -433,10 +441,7 @@ impl<T, S: Scale<T>> Receiver<T, S> {
 impl<T: Clone, S: Scale<T>> Receiver<T, S> {
     /// Receives a message from the channel.
     pub fn recv(&mut self) -> Recv<'_, T, S> {
-        Recv {
-            recv: self,
-            waiter: None,
-        }
+        Recv { recv: self }
     }
 
     /// Attempts to receive a message from the channel.
@@ -446,29 +451,47 @@ impl<T: Clone, S: Scale<T>> Receiver<T, S> {
             .recv_at(&mut self.pos)
             .map(|r| r.unwrap_or_else(T::clone))
     }
+
+    fn poll(&mut self, ctx: &mut Context<'_>) -> Poll<Result<T, RecvError>> {
+        loop {
+            if let Some(future) = &mut self.waiter {
+                ready!(Pin::new(future).poll(ctx));
+                self.waiter = None;
+            }
+
+            let mut inner = self.inner.lock().unwrap();
+            return Poll::Ready(match inner.recv_at(&mut self.pos) {
+                Ok(e) => Ok(e.unwrap_or_else(T::clone)),
+                Err(TryRecvError::Overflowed) => Err(RecvError::Overflowed),
+                Err(TryRecvError::Closed) => Err(RecvError::Closed),
+                Err(TryRecvError::Empty) => {
+                    self.waiter = Some(inner.recv_ops.listen());
+                    continue;
+                }
+            });
+        }
+    }
+}
+
+impl<T: Clone, S: Scale<T>> Stream for Receiver<T, S> {
+    type Item = T;
+
+    fn poll_next(self: Pin<&mut Self>, ctx: &mut Context<'_>) -> Poll<Option<T>> {
+        let this = self.get_mut();
+        loop {
+            return Poll::Ready(match ready!(this.poll(ctx)) {
+                Ok(item) => Some(item),
+                Err(RecvError::Closed) => None,
+                Err(RecvError::Overflowed) => continue,
+            });
+        }
+    }
 }
 
 impl<'a, T: Clone, S: Scale<T>> Future for Recv<'a, T, S> {
     type Output = Result<T, RecvError>;
 
     fn poll(self: Pin<&mut Self>, ctx: &mut Context<'_>) -> Poll<Self::Output> {
-        let Self { recv, waiter } = self.get_mut();
-        loop {
-            if let Some(future) = waiter {
-                ready!(Pin::new(future).poll(ctx));
-                *waiter = None;
-            }
-
-            let mut inner = recv.inner.lock().unwrap();
-            return Poll::Ready(match inner.recv_at(&mut recv.pos) {
-                Ok(e) => Ok(e.unwrap_or_else(T::clone)),
-                Err(TryRecvError::Overflowed) => Err(RecvError::Overflowed),
-                Err(TryRecvError::Closed) => Err(RecvError::Closed),
-                Err(TryRecvError::Empty) => {
-                    *waiter = Some(inner.recv_ops.listen());
-                    continue;
-                }
-            });
-        }
+        self.get_mut().recv.poll(ctx)
     }
 }
