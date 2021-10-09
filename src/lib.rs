@@ -111,6 +111,10 @@ use std::task::{Context, Poll};
 use event_listener::{Event, EventListener};
 use futures_core::{ready, stream::Stream};
 
+/// A broadcast channel whose capacity is determined by element wights, not by the number of
+/// messages.
+pub mod weighted;
+
 /// Create a new broadcast channel.
 ///
 /// The created channel has space to hold at most `cap` messages at a time.
