@@ -792,7 +792,7 @@ impl<T: Clone, L: CapacityLimiter<T>> Sender<T, L> {
     ///
     /// assert_eq!(s.broadcast(1).await, Ok(None));
     /// drop(r);
-    /// assert_eq!(s.broadcast(2).await, Err(SendError(2)));
+    /// assert_eq!(s.broadcast(2).await, Err(SendError::Closed(2)));
     /// # });
     /// ```
     pub fn broadcast(&self, msg: T) -> Send<'_, T, L> {
@@ -844,7 +844,8 @@ impl<T: Clone, L: CapacityLimiter<T>> Sender<T, L> {
             .capacity
             .try_add(&msg, inner.queue.iter().map(|(m, _)| m))
         {
-            if inner.overflow && !inner.capacity.error_is_fatal(&error) {
+            let fatal = inner.queue.is_empty() || inner.capacity.error_is_fatal(&error);
+            if inner.overflow && !fatal {
                 // Make room by popping a message.
                 ret = inner.queue.pop_front().map(|(m, _)| m);
                 if let Some(elt) = &ret {
@@ -856,7 +857,11 @@ impl<T: Clone, L: CapacityLimiter<T>> Sender<T, L> {
                     continue;
                 }
             }
-            return Err(TrySendError::Full { msg, error });
+            if fatal {
+                return Err(TrySendError::Rejected { msg, error });
+            } else {
+                return Err(TrySendError::Full { msg, error });
+            }
         }
         let receiver_count = inner.receiver_count;
         inner.queue.push_back((msg, receiver_count));
@@ -1423,29 +1428,60 @@ impl fmt::Display for FullError {
 }
 
 /// An error returned from [`Sender::broadcast()`].
-///
-/// Received because the channel is closed.
 #[derive(PartialEq, Eq, Clone, Copy)]
-pub struct SendError<T>(pub T);
+pub enum SendError<T, E = FullError> {
+    /// Received because the channel is closed.
+    Closed(T),
 
-impl<T> SendError<T> {
+    /// A fatal capacity error occurred.
+    ///
+    /// At least one of the following is true:
+    ///
+    ///  - The error returned by the [`CapacityLimiter`] was considered fatal.
+    ///  - There are no elements in the channel and the limiter returned an error from its
+    ///    `try_add` function.
+    Rejected {
+        /// The message that was not able to be sent.
+        msg: T,
+        /// Details about the capacity error.
+        error: E,
+    },
+}
+
+impl<T, E> SendError<T, E> {
     /// Unwraps the message that couldn't be sent.
     pub fn into_inner(self) -> T {
-        self.0
+        match self {
+            Self::Closed(msg) => msg,
+            Self::Rejected { msg, .. } => msg,
+        }
     }
 }
 
-impl<T> error::Error for SendError<T> {}
-
-impl<T> fmt::Debug for SendError<T> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "SendError(..)")
+impl<T, E: error::Error + 'static> error::Error for SendError<T, E> {
+    fn source(&self) -> Option<&(dyn error::Error + 'static)> {
+        match self {
+            SendError::Rejected { error, .. } => Some(error),
+            _ => None,
+        }
     }
 }
 
-impl<T> fmt::Display for SendError<T> {
+impl<T, E: fmt::Debug> fmt::Debug for SendError<T, E> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "sending into a closed channel")
+        match self {
+            Self::Closed(_) => write!(f, "SendError::Closed(..)"),
+            Self::Rejected { error, .. } => write!(f, "SendError::Rejected({:?})", error),
+        }
+    }
+}
+
+impl<T, E: fmt::Display> fmt::Display for SendError<T, E> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Closed(_) => write!(f, "sending into a closed channel"),
+            Self::Rejected { error, .. } => write!(f, "channel capacity error: {}", error),
+        }
     }
 }
 
@@ -1454,9 +1490,23 @@ impl<T> fmt::Display for SendError<T> {
 pub enum TrySendError<T, E = FullError> {
     /// The channel is full but not closed.
     Full {
-        /// The message that did not fit
+        /// The message that did not fit.
         msg: T,
-        /// Details about the capacity error
+        /// Details about the capacity error.
+        error: E,
+    },
+
+    /// The message was rejected; retrying will not help.
+    ///
+    /// At least one of the following is true:
+    ///
+    ///  - The error returned by the [`CapacityLimiter`] was considered fatal.
+    ///  - There are no elements in the channel and the limiter returned an error from its
+    ///    `try_add` function.
+    Rejected {
+        /// The message that did not fit.
+        msg: T,
+        /// Details about the error
         error: E,
     },
 
@@ -1472,6 +1522,7 @@ impl<T, E> TrySendError<T, E> {
     pub fn into_inner(self) -> T {
         match self {
             TrySendError::Full { msg, .. } => msg,
+            TrySendError::Rejected { msg, .. } => msg,
             TrySendError::Closed(t) => t,
             TrySendError::Inactive(t) => t,
         }
@@ -1479,25 +1530,32 @@ impl<T, E> TrySendError<T, E> {
 
     /// Returns `true` if the channel is full but not closed.
     pub fn is_full(&self) -> bool {
-        match self {
-            TrySendError::Full { .. } => true,
-            TrySendError::Closed(_) | TrySendError::Inactive(_) => false,
-        }
+        matches!(self, TrySendError::Full { .. } | TrySendError::Rejected { .. })
+    }
+
+    /// Returns `true` if retrying the send might succeed later.
+    ///
+    /// Prefer using [`Sender::broadcast`] if you plan to retry the operation.
+    pub fn can_retry(&self) -> bool {
+        matches!(self, TrySendError::Full { .. } | TrySendError::Inactive { .. })
     }
 
     /// Returns `true` if the channel is closed.
     pub fn is_closed(&self) -> bool {
-        match self {
-            TrySendError::Full { .. } | TrySendError::Inactive(_) => false,
-            TrySendError::Closed(_) => true,
-        }
+        matches!(self, TrySendError::Closed { .. })
     }
 
-    /// Returns `true` if the channel is closed.
+    /// Returns `true` if the channel is inactive.
     pub fn is_disconnected(&self) -> bool {
+        matches!(self, TrySendError::Inactive { .. })
+    }
+
+    fn map_send_error(self) -> Result<T, SendError<T, E>> {
         match self {
-            TrySendError::Full { .. } | TrySendError::Closed(_) => false,
-            TrySendError::Inactive(_) => true,
+            TrySendError::Full { msg, .. } => Ok(msg),
+            TrySendError::Rejected { msg, error } => Err(SendError::Rejected { msg, error }),
+            TrySendError::Closed(msg) => Err(SendError::Closed(msg)),
+            TrySendError::Inactive(msg) => Ok(msg),
         }
     }
 }
@@ -1506,6 +1564,7 @@ impl<T, E: error::Error + 'static> error::Error for TrySendError<T, E> {
     fn source(&self) -> Option<&(dyn error::Error + 'static)> {
         match self {
             TrySendError::Full { error, .. } => Some(error),
+            TrySendError::Rejected { error, .. } => Some(error),
             _ => None,
         }
     }
@@ -1515,6 +1574,7 @@ impl<T, E: fmt::Debug> fmt::Debug for TrySendError<T, E> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             TrySendError::Full { error, .. } => write!(f, "Full({:?})", error),
+            TrySendError::Rejected { error, .. } => write!(f, "Rejected({:?})", error),
             TrySendError::Closed(..) => write!(f, "Closed(..)"),
             TrySendError::Inactive(..) => write!(f, "Inactive(..)"),
         }
@@ -1525,6 +1585,9 @@ impl<T, E: fmt::Display> fmt::Display for TrySendError<T, E> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             TrySendError::Full { error, .. } => write!(f, "channel capacity error: {}", error),
+            TrySendError::Rejected { error, .. } => {
+                write!(f, "channel rejected message: {}", error)
+            }
             TrySendError::Closed(..) => write!(f, "sending into a closed channel"),
             TrySendError::Inactive(..) => write!(f, "sending into the void (no active receivers)"),
         }
@@ -1624,7 +1687,7 @@ pub struct Send<'a, T, L: CapacityLimiter<T> = ElementCountLimiter> {
 impl<'a, T, L: CapacityLimiter<T>> Unpin for Send<'a, T, L> {}
 
 impl<'a, T: Clone, L: CapacityLimiter<T>> Future for Send<'a, T, L> {
-    type Output = Result<Option<T>, SendError<T>>;
+    type Output = Result<Option<T>, SendError<T, L::Error>>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let mut this = Pin::new(self);
@@ -1644,9 +1707,8 @@ impl<'a, T: Clone, L: CapacityLimiter<T>> Future for Send<'a, T, L> {
 
                     return Poll::Ready(Ok(msg));
                 }
-                Err(TrySendError::Closed(msg)) => return Poll::Ready(Err(SendError(msg))),
-                Err(TrySendError::Full { msg, .. }) | Err(TrySendError::Inactive(msg)) => {
-                    this.msg = Some(msg)
+                Err(e) => {
+                    this.msg = Some(e.map_send_error()?);
                 }
             }
 
