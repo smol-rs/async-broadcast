@@ -168,6 +168,7 @@ fn channel_shrink() {
 
     r1.set_capacity(2);
 
+    assert_eq!(r1.try_recv(), Err(TryRecvError::Overflowed));
     assert_eq!(r1.try_recv().unwrap(), 3);
     assert_eq!(r1.try_recv().unwrap(), 4);
     assert_eq!(r1.try_recv(), Err(TryRecvError::Empty));
