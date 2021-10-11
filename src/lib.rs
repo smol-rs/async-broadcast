@@ -130,7 +130,7 @@ use futures_core::{ready, stream::Stream};
 /// let mut r2 = r1.clone();
 ///
 /// assert_eq!(s.broadcast(10).await, Ok(None));
-/// assert_eq!(s.try_broadcast(20), Err(TrySendError::Full(20)));
+/// assert_eq!(s.try_broadcast(20).unwrap_err().into_inner(), 20);
 ///
 /// assert_eq!(r1.recv().await, Ok(10));
 /// assert_eq!(r2.recv().await, Ok(10));
@@ -214,7 +214,9 @@ where
 /// sending to this channel.
 pub trait CapacityLimiter<T: ?Sized> {
     /// An "over capacity" error.
-    type Error: error::Error;
+    ///
+    /// Prefer setting this to [`FullError`] if you have no details to add.
+    type Error: error::Error + 'static;
 
     /// Attempt to add the given item to the channel.
     ///
@@ -513,12 +515,12 @@ impl<T> Sender<T> {
     /// assert_eq!(r.try_recv().unwrap(), 3);
     /// assert_eq!(r.try_recv(), Err(TryRecvError::Empty));
     /// s.try_broadcast(1).unwrap();
-    /// assert_eq!(s.try_broadcast(2), Err(TrySendError::Full(2)));
+    /// assert!(matches!(s.try_broadcast(2), Err(TrySendError::Full { msg: 2, .. })));
     ///
     /// s.set_capacity(2);
     /// assert_eq!(s.capacity(), 2);
     /// s.try_broadcast(2).unwrap();
-    /// assert_eq!(s.try_broadcast(2), Err(TrySendError::Full(2)));
+    /// assert!(matches!(s.try_broadcast(2), Err(TrySendError::Full { msg: 2, .. })));
     /// ```
     pub fn set_capacity(&mut self, new_cap: usize) {
         let _ = self.inner.lock().unwrap().adjust_capacity(new_cap);
@@ -553,7 +555,7 @@ impl<T, L: CapacityLimiter<T>> Sender<T, L> {
     /// let (mut s, mut r) = broadcast::<i32>(2);
     /// s.try_broadcast(1).unwrap();
     /// s.try_broadcast(2).unwrap();
-    /// assert_eq!(s.try_broadcast(3), Err(TrySendError::Full(3)));
+    /// assert!(matches!(s.try_broadcast(3), Err(TrySendError::Full { msg: 3, .. })));
     /// s.set_overflow(true);
     /// assert_eq!(s.try_broadcast(3).unwrap(), Some(1));
     /// assert_eq!(s.try_broadcast(4).unwrap(), Some(2));
@@ -759,11 +761,11 @@ impl<T, L: AdjustableCapacityLimiter<T>> Sender<T, L> {
     /// assert_eq!(r.try_recv().unwrap(), 3);
     /// assert_eq!(r.try_recv(), Err(TryRecvError::Empty));
     /// s.try_broadcast(1).unwrap();
-    /// assert_eq!(s.try_broadcast(2), Err(TrySendError::Full(2)));
+    /// assert!(matches!(s.try_broadcast(2), Err(TrySendError::Full { msg: 2, .. })));
     ///
     /// s.adjust_capacity(2);
     /// s.try_broadcast(2).unwrap();
-    /// assert_eq!(s.try_broadcast(2), Err(TrySendError::Full(2)));
+    /// assert!(matches!(s.try_broadcast(2), Err(TrySendError::Full { msg: 2, .. })));
     /// ```
     pub fn adjust_capacity(&mut self, adjustment: L::Adjustment) {
         let _ = self.inner.lock().unwrap().adjust_capacity(adjustment);
@@ -818,12 +820,12 @@ impl<T: Clone, L: CapacityLimiter<T>> Sender<T, L> {
     /// let (s, r) = broadcast(1);
     ///
     /// assert_eq!(s.try_broadcast(1), Ok(None));
-    /// assert_eq!(s.try_broadcast(2), Err(TrySendError::Full(2)));
+    /// assert!(matches!(s.try_broadcast(2), Err(TrySendError::Full { msg: 2, .. })));
     ///
     /// drop(r);
     /// assert_eq!(s.try_broadcast(3), Err(TrySendError::Closed(3)));
     /// ```
-    pub fn try_broadcast(&self, msg: T) -> Result<Option<T>, TrySendError<T>> {
+    pub fn try_broadcast(&self, msg: T) -> Result<Option<T>, TrySendError<T, L::Error>> {
         let mut ret = None;
         let mut inner = match self.inner.lock() {
             Ok(i) => i,
@@ -838,11 +840,11 @@ impl<T: Clone, L: CapacityLimiter<T>> Sender<T, L> {
             return Err(TrySendError::Inactive(msg));
         }
 
-        while let Err(e) = inner
+        while let Err(error) = inner
             .capacity
             .try_add(&msg, inner.queue.iter().map(|(m, _)| m))
         {
-            if inner.overflow && !inner.capacity.error_is_fatal(&e) {
+            if inner.overflow && !inner.capacity.error_is_fatal(&error) {
                 // Make room by popping a message.
                 ret = inner.queue.pop_front().map(|(m, _)| m);
                 if let Some(elt) = &ret {
@@ -854,7 +856,7 @@ impl<T: Clone, L: CapacityLimiter<T>> Sender<T, L> {
                     continue;
                 }
             }
-            return Err(TrySendError::Full(msg));
+            return Err(TrySendError::Full { msg, error });
         }
         let receiver_count = inner.receiver_count;
         inner.queue.push_back((msg, receiver_count));
@@ -943,12 +945,12 @@ impl<T> Receiver<T> {
     /// assert_eq!(r.try_recv().unwrap(), 3);
     /// assert_eq!(r.try_recv(), Err(TryRecvError::Empty));
     /// s.try_broadcast(1).unwrap();
-    /// assert_eq!(s.try_broadcast(2), Err(TrySendError::Full(2)));
+    /// assert!(matches!(s.try_broadcast(2), Err(TrySendError::Full { msg: 2, .. })));
     ///
     /// r.set_capacity(2);
     /// assert_eq!(r.capacity(), 2);
     /// s.try_broadcast(2).unwrap();
-    /// assert_eq!(s.try_broadcast(2), Err(TrySendError::Full(2)));
+    /// assert!(matches!(s.try_broadcast(2), Err(TrySendError::Full { msg: 2, .. })));
     /// ```
     pub fn set_capacity(&mut self, new_cap: usize) {
         let _ = self.inner.lock().unwrap().adjust_capacity(new_cap);
@@ -983,7 +985,7 @@ impl<T, L: CapacityLimiter<T>> Receiver<T, L> {
     /// let (s, mut r) = broadcast::<i32>(2);
     /// s.try_broadcast(1).unwrap();
     /// s.try_broadcast(2).unwrap();
-    /// assert_eq!(s.try_broadcast(3), Err(TrySendError::Full(3)));
+    /// assert!(matches!(s.try_broadcast(3), Err(TrySendError::Full { msg: 3, .. })));
     /// r.set_overflow(true);
     /// assert_eq!(s.try_broadcast(3).unwrap(), Some(1));
     /// assert_eq!(s.try_broadcast(4).unwrap(), Some(2));
@@ -1301,11 +1303,11 @@ impl<T, L: AdjustableCapacityLimiter<T>> Receiver<T, L> {
     /// assert_eq!(r.try_recv().unwrap(), 3);
     /// assert_eq!(r.try_recv(), Err(TryRecvError::Empty));
     /// s.try_broadcast(1).unwrap();
-    /// assert_eq!(s.try_broadcast(2), Err(TrySendError::Full(2)));
+    /// assert!(matches!(s.try_broadcast(2), Err(TrySendError::Full { msg: 2, .. })));
     ///
     /// r.adjust_capacity(2);
     /// s.try_broadcast(2).unwrap();
-    /// assert_eq!(s.try_broadcast(2), Err(TrySendError::Full(2)));
+    /// assert!(matches!(s.try_broadcast(2), Err(TrySendError::Full { msg: 2, .. })));
     /// ```
     pub fn adjust_capacity(&mut self, adjustment: L::Adjustment) {
         let _ = self.inner.lock().unwrap().adjust_capacity(adjustment);
@@ -1407,6 +1409,8 @@ impl<T: Clone, L: CapacityLimiter<T>> futures_core::stream::FusedStream for Rece
 }
 
 /// An error caused by exceeding a channel's capacity.
+///
+/// No further details are available.
 #[derive(PartialEq, Eq, Clone, Copy, Debug)]
 pub struct FullError;
 
@@ -1447,9 +1451,14 @@ impl<T> fmt::Display for SendError<T> {
 
 /// An error returned from [`Sender::try_broadcast()`].
 #[derive(PartialEq, Eq, Clone, Copy)]
-pub enum TrySendError<T> {
+pub enum TrySendError<T, E = FullError> {
     /// The channel is full but not closed.
-    Full(T),
+    Full {
+        /// The message that did not fit
+        msg: T,
+        /// Details about the capacity error
+        error: E,
+    },
 
     /// The channel is closed.
     Closed(T),
@@ -1458,11 +1467,11 @@ pub enum TrySendError<T> {
     Inactive(T),
 }
 
-impl<T> TrySendError<T> {
+impl<T, E> TrySendError<T, E> {
     /// Unwraps the message that couldn't be sent.
     pub fn into_inner(self) -> T {
         match self {
-            TrySendError::Full(t) => t,
+            TrySendError::Full { msg, .. } => msg,
             TrySendError::Closed(t) => t,
             TrySendError::Inactive(t) => t,
         }
@@ -1471,7 +1480,7 @@ impl<T> TrySendError<T> {
     /// Returns `true` if the channel is full but not closed.
     pub fn is_full(&self) -> bool {
         match self {
-            TrySendError::Full(_) => true,
+            TrySendError::Full { .. } => true,
             TrySendError::Closed(_) | TrySendError::Inactive(_) => false,
         }
     }
@@ -1479,7 +1488,7 @@ impl<T> TrySendError<T> {
     /// Returns `true` if the channel is closed.
     pub fn is_closed(&self) -> bool {
         match self {
-            TrySendError::Full(_) | TrySendError::Inactive(_) => false,
+            TrySendError::Full { .. } | TrySendError::Inactive(_) => false,
             TrySendError::Closed(_) => true,
         }
     }
@@ -1487,28 +1496,35 @@ impl<T> TrySendError<T> {
     /// Returns `true` if the channel is closed.
     pub fn is_disconnected(&self) -> bool {
         match self {
-            TrySendError::Full(_) | TrySendError::Closed(_) => false,
+            TrySendError::Full { .. } | TrySendError::Closed(_) => false,
             TrySendError::Inactive(_) => true,
         }
     }
 }
 
-impl<T> error::Error for TrySendError<T> {}
+impl<T, E: error::Error + 'static> error::Error for TrySendError<T, E> {
+    fn source(&self) -> Option<&(dyn error::Error + 'static)> {
+        match self {
+            TrySendError::Full { error, .. } => Some(error),
+            _ => None,
+        }
+    }
+}
 
-impl<T> fmt::Debug for TrySendError<T> {
+impl<T, E: fmt::Debug> fmt::Debug for TrySendError<T, E> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match *self {
-            TrySendError::Full(..) => write!(f, "Full(..)"),
+        match self {
+            TrySendError::Full { error, .. } => write!(f, "Full({:?})", error),
             TrySendError::Closed(..) => write!(f, "Closed(..)"),
             TrySendError::Inactive(..) => write!(f, "Inactive(..)"),
         }
     }
 }
 
-impl<T> fmt::Display for TrySendError<T> {
+impl<T, E: fmt::Display> fmt::Display for TrySendError<T, E> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match *self {
-            TrySendError::Full(..) => write!(f, "sending into a full channel"),
+        match self {
+            TrySendError::Full { error, .. } => write!(f, "channel capacity error: {}", error),
             TrySendError::Closed(..) => write!(f, "sending into a closed channel"),
             TrySendError::Inactive(..) => write!(f, "sending into the void (no active receivers)"),
         }
@@ -1629,7 +1645,9 @@ impl<'a, T: Clone, L: CapacityLimiter<T>> Future for Send<'a, T, L> {
                     return Poll::Ready(Ok(msg));
                 }
                 Err(TrySendError::Closed(msg)) => return Poll::Ready(Err(SendError(msg))),
-                Err(TrySendError::Full(m)) | Err(TrySendError::Inactive(m)) => this.msg = Some(m),
+                Err(TrySendError::Full { msg, .. }) | Err(TrySendError::Inactive(msg)) => {
+                    this.msg = Some(msg)
+                }
             }
 
             // Sending failed - now start listening for notifications or wait for one.
