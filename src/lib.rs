@@ -105,6 +105,8 @@ use std::convert::TryInto;
 use std::error;
 use std::fmt;
 use std::future::Future;
+use std::mem;
+use std::ops::Deref;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll};
@@ -174,6 +176,35 @@ pub fn broadcast<T>(cap: usize) -> (Sender<T>, Receiver<T>) {
 /// separate semaphore to manage such limits does not work with broadcast channels as only the
 /// channel tracks when the last copy of a message is removed.  See [`CapacityLimiter`] for more
 /// details.
+///
+/// # Examples
+///
+/// ```
+/// # futures_lite::future::block_on(async {
+/// use async_broadcast::*;
+///
+/// let limit = SimpleMemoryCapacityLimiter { bytes_free: 199 };
+/// let (send, mut recv) = broadcast_with_limiter(limit);
+///
+/// let item = vec![0u8;100];
+/// send.try_broadcast(item).unwrap();
+///
+/// let item = vec![0u8;100];
+/// let fail = send.try_broadcast(item);
+/// assert!(matches!(fail, Err(TrySendError::Full { .. })));
+///
+/// let smol = vec![0u8;10];
+/// send.try_broadcast(smol).unwrap();
+///
+/// assert_eq!(recv.try_recv().unwrap().len(), 100);
+/// assert_eq!(recv.try_recv().unwrap().len(), 10);
+/// assert_eq!(recv.try_recv(), Err(TryRecvError::Empty));
+///
+/// let item = vec![0u8;300];
+/// let fail = send.broadcast(item).await;
+/// assert!(matches!(fail, Err(SendError::Rejected { .. })));
+/// # });
+/// ```
 pub fn broadcast_with_limiter<T, L>(capacity: L) -> (Sender<T, L>, Receiver<T, L>)
 where
     L: CapacityLimiter<T>,
@@ -1987,6 +2018,139 @@ impl<T, L: CapacityLimiter<T>> Drop for InactiveReceiver<T, L> {
             inner.inactive_receiver_count -= 1;
 
             inner.close_channel();
+        }
+    }
+}
+
+/// A [`CapacityLimiter`] based on the memory size of simple objects like [`Box`] or [`Vec`].
+///
+/// This counts the size of the element plus the size of the value it [Deref]s to.  This is only
+/// correct if there is exactly one heap allocation and that allocation is returned by the deref
+/// operator.  This means it does not account for the unused capacity of a `Vec`, for other heap
+/// pointers contained within a boxed type, for the refcounts of an [`Arc`], or for any heap
+/// metadata.
+///
+/// # Examples
+///
+/// ```
+/// # futures_lite::future::block_on(async {
+/// use async_broadcast::*;
+///
+/// let limit = SimpleMemoryCapacityLimiter { bytes_free: 199 };
+/// let (send, mut recv) = broadcast_with_limiter(limit);
+///
+/// let item = vec![0u8;100];
+/// send.try_broadcast(item).unwrap();
+///
+/// let item = vec![0u8;100];
+/// let err = send.try_broadcast(item).unwrap_err();
+/// assert!(err.is_full());
+///
+/// let small_item = vec![0u8;10];
+/// send.try_broadcast(small_item).unwrap();
+///
+/// assert_eq!(recv.try_recv().unwrap().len(), 100);
+/// assert_eq!(recv.try_recv().unwrap().len(), 10);
+/// assert_eq!(recv.try_recv(), Err(TryRecvError::Empty));
+///
+/// let item = vec![0u8;300];
+/// match send.broadcast(item).await {
+///     Err(SendError::Rejected { msg, error }) => {
+///         assert_eq!(msg.len(), 300);
+///         assert_eq!(error.available, 199);
+///         assert_eq!(error.required, 300 + std::mem::size_of::<Vec<u8>>());
+///     }
+///     _ => unreachable!(),
+/// }
+/// # });
+/// ```
+#[derive(Copy, Clone, Debug)]
+pub struct SimpleMemoryCapacityLimiter {
+    /// The channel's current free space in bytes.
+    pub bytes_free: usize,
+}
+
+/// An error returned by [`SimpleMemoryCapacityLimiter`].
+#[derive(PartialEq, Eq, Clone, Copy, Debug)]
+pub struct ByteCapacityError {
+    /// The number of bytes required to add the item.
+    pub required: usize,
+    /// The number of bytes available in the channel at the time of the add request.
+    pub available: usize,
+}
+
+impl error::Error for ByteCapacityError {}
+
+impl fmt::Display for ByteCapacityError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "required {} bytes, {} bytes available",
+            self.required, self.available
+        )
+    }
+}
+
+impl<T: Deref> CapacityLimiter<T> for SimpleMemoryCapacityLimiter {
+    type Error = ByteCapacityError;
+
+    fn try_add<'a, I>(&mut self, item: &T, _: I) -> Result<(), ByteCapacityError>
+    where
+        T: 'a,
+        I: ExactSizeIterator<Item = &'a T>,
+    {
+        let size = mem::size_of_val(item) + mem::size_of_val(&**item);
+        if let Some(new_free) = self.bytes_free.checked_sub(size) {
+            self.bytes_free = new_free;
+            Ok(())
+        } else {
+            Err(ByteCapacityError {
+                required: size,
+                available: self.bytes_free,
+            })
+        }
+    }
+
+    fn remove<'a, I>(&mut self, item: &T, _: I)
+    where
+        T: 'a,
+        I: ExactSizeIterator<Item = &'a T>,
+    {
+        let size = mem::size_of_val(item) + mem::size_of_val(&**item);
+        self.bytes_free = self.bytes_free.saturating_add(size);
+    }
+}
+
+impl<T: Deref> AdjustableCapacityLimiter<T> for SimpleMemoryCapacityLimiter {
+    /// The number of bytes to add or remove from the capacity.
+    type Adjustment = isize;
+
+    fn try_adjust<'a, I>(
+        &mut self,
+        msg: &mut Self::Adjustment,
+        _: I,
+    ) -> Result<(), ByteCapacityError>
+    where
+        T: 'a,
+        I: ExactSizeIterator<Item = &'a T>,
+    {
+        let delta = *msg;
+        if let Ok(delta) = delta.try_into() {
+            // it's always safe to add capacity
+            self.bytes_free = self.bytes_free.saturating_add(delta);
+            Ok(())
+        } else {
+            debug_assert!(delta < 0); // that's what a try_into failure means
+            let loss = delta.wrapping_neg() as usize;
+            if loss > self.bytes_free {
+                Err(ByteCapacityError {
+                    required: loss,
+                    available: self.bytes_free,
+                })
+            } else {
+                self.bytes_free -= loss;
+                Ok(())
+            }
         }
     }
 }
