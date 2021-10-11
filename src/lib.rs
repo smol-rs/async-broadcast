@@ -143,7 +143,7 @@ pub fn broadcast<T>(cap: usize) -> (Sender<T>, Receiver<T>) {
 
     let inner = Arc::new(Mutex::new(Inner {
         queue: VecDeque::with_capacity(cap),
-        capacity: cap,
+        capacity: ElementCountLimiter(cap),
         overflow: false,
         receiver_count: 1,
         inactive_receiver_count: 0,
@@ -166,12 +166,180 @@ pub fn broadcast<T>(cap: usize) -> (Sender<T>, Receiver<T>) {
     (s, r)
 }
 
+/// Create a new broadcast channel with the given limiter.
+///
+/// A limiter tracks the contents of the channel and determines if sending an element to the
+/// channel will block or cause an overflow.  This allows implementing more complex limits such as
+/// a limit on the total memory size of elements in this channel.  The ususal solution of using a
+/// separate semaphore to manage such limits does not work with broadcast channels as only the
+/// channel tracks when the last copy of a message is removed.  See [`CapacityLimiter`] for more
+/// details.
+pub fn broadcast_with_limiter<T, L>(capacity: L) -> (Sender<T, L>, Receiver<T, L>)
+where
+    L: CapacityLimiter<T>,
+{
+    let inner = Arc::new(Mutex::new(Inner {
+        queue: VecDeque::new(),
+        capacity,
+        overflow: false,
+        receiver_count: 1,
+        inactive_receiver_count: 0,
+        sender_count: 1,
+        head_pos: 0,
+        is_closed: false,
+        send_ops: Event::new(),
+        recv_ops: Event::new(),
+    }));
+
+    let s = Sender {
+        inner: inner.clone(),
+    };
+    let r = Receiver {
+        inner,
+        pos: 0,
+        listener: None,
+    };
+
+    (s, r)
+}
+
+/// A limit on the capacity of a channel.
+///
+/// This allows for more complex limits on a channel's capacity, beyond the number of messages.
+/// Each broadcast channel contains a limiter that is consulted prior to adding a message to the
+/// channel and notified when a message is removed.
+///
+/// A limiter may also reject some elements unconditionally by returning an error that is
+/// designated as fatal.  This may be useful if not all instances of a given type are suitable for
+/// sending to this channel.
+pub trait CapacityLimiter<T: ?Sized> {
+    /// An "over capacity" error.
+    type Error: error::Error;
+
+    /// Attempt to add the given item to the channel.
+    ///
+    /// Return `Ok` if the item may be added.  Any updates to internal state should only be done
+    /// if this function returns `Ok`.  An overflowing channel will retry the add after removing an
+    /// element if the returned error is not fatal.
+    fn try_add<'a, I>(&mut self, item: &T, contents: I) -> Result<(), Self::Error>
+    where
+        T: 'a,
+        I: ExactSizeIterator<Item = &'a T>;
+
+    /// Remove an item from the channel.
+    ///
+    /// The item removed and the rest of the items in the channel are provided in order to allow
+    /// updating internal state.  The default implementation does nothing.
+    fn remove<'a, I>(&mut self, item: &T, contents: I)
+    where
+        T: 'a,
+        I: ExactSizeIterator<Item = &'a T>,
+    {
+        let _ = (item, contents);
+    }
+
+    /// Hint if an error is fatal.
+    ///
+    /// Non-fatal errors will cause the channel to begin discarding elements (if the channel is
+    /// overflowing) or block on send (if not) until either the channel is empty or the `try_add`
+    /// succeeds.  If it is known that `try_add` will never succeed, return `true` here to cause
+    /// send operations to immediately return a `Rejected` error variant.
+    ///
+    /// The default implementation returns false.
+    fn error_is_fatal(&self, error: &Self::Error) -> bool {
+        let _ = error;
+        false
+    }
+
+    /// Hint if the channel is full.
+    ///
+    /// If this method returns true, waiting send operations will not be unblocked.  The default
+    /// implementation always returns false, which may result in an extra wakeup but does not
+    /// impact correctness.
+    fn is_full<'a, I>(&self, contents: I) -> bool
+    where
+        T: 'a,
+        I: ExactSizeIterator<Item = &'a T>,
+    {
+        let _ = contents;
+        false
+    }
+}
+
+/// An adjustable limit on the capacity of a channel.
+pub trait AdjustableCapacityLimiter<T: ?Sized>: CapacityLimiter<T> {
+    /// An adjustment message
+    type Adjustment;
+
+    /// Try to adjust the capacity according to the given message.
+    ///
+    /// Return `Ok` if the adjustment was successful.  Any updates to internal state should be done
+    /// only if this function returns `Ok`.  This may be called multiple times with successively
+    /// fewer elements if the returned error is non-fatal.
+    fn try_adjust<'a, I>(
+        &mut self,
+        msg: &mut Self::Adjustment,
+        contents: I,
+    ) -> Result<(), Self::Error>
+    where
+        T: 'a,
+        I: ExactSizeIterator<Item = &'a T>;
+}
+
+/// A [`CapacityLimiter`] based on the number of elements in the channel.
 #[derive(Debug)]
-struct Inner<T> {
+pub struct ElementCountLimiter(pub usize);
+
+impl<T: ?Sized> CapacityLimiter<T> for ElementCountLimiter {
+    type Error = FullError;
+
+    fn try_add<'a, I>(&mut self, _: &T, contents: I) -> Result<(), FullError>
+    where
+        T: 'a,
+        I: ExactSizeIterator<Item = &'a T>,
+    {
+        // the current len does not yet include the new element
+        if self.0 > contents.len() {
+            Ok(())
+        } else {
+            Err(FullError)
+        }
+    }
+
+    fn is_full<'a, I>(&self, contents: I) -> bool
+    where
+        T: 'a,
+        I: ExactSizeIterator<Item = &'a T>,
+    {
+        self.0 <= contents.len()
+    }
+}
+
+impl<T: ?Sized> AdjustableCapacityLimiter<T> for ElementCountLimiter {
+    type Adjustment = usize;
+
+    fn try_adjust<'a, I>(
+        &mut self,
+        msg: &mut Self::Adjustment,
+        contents: I,
+    ) -> Result<(), FullError>
+    where
+        T: 'a,
+        I: ExactSizeIterator<Item = &'a T>,
+    {
+        if *msg >= contents.len() {
+            self.0 = *msg;
+            Ok(())
+        } else {
+            Err(FullError)
+        }
+    }
+}
+
+#[derive(Debug)]
+struct Inner<T, L> {
     queue: VecDeque<(T, usize)>,
-    // We assign the same capacity to the queue but that's just specifying the minimum capacity and
-    // the actual capacity could be anything. Hence the need to keep track of our own set capacity.
-    capacity: usize,
+    capacity: L,
     receiver_count: usize,
     inactive_receiver_count: usize,
     sender_count: usize,
@@ -188,7 +356,7 @@ struct Inner<T> {
     recv_ops: Event,
 }
 
-impl<T> Inner<T> {
+impl<T, L: CapacityLimiter<T>> Inner<T, L> {
     /// Try receiving at the given position, returning either the element or a reference to it.
     ///
     /// Result is used here instead of Cow because we don't have a Clone bound on T.
@@ -226,6 +394,8 @@ impl<T> Inner<T> {
 
             // Remove the element from the queue, adjust space, and notify senders
             let elt = self.queue.pop_front().unwrap().0;
+            self.capacity
+                .remove(&elt, self.queue.iter().map(|(m, _)| m));
             self.head_pos += 1;
             if !self.overflow {
                 // Notify 1 awaiting senders that there is now room. If there is still room in the
@@ -237,6 +407,10 @@ impl<T> Inner<T> {
         } else {
             Ok(Err(&self.queue[i].0))
         }
+    }
+
+    fn is_full(&self) -> bool {
+        self.capacity.is_full(self.queue.iter().map(|(m, _)| m))
     }
 
     /// Closes the channel and notifies all waiting operations.
@@ -255,31 +429,38 @@ impl<T> Inner<T> {
         true
     }
 
-    /// Set the channel capacity.
-    ///
-    /// There are times when you need to change the channel's capacity after creating it. If the
-    /// `new_cap` is less than the number of messages in the channel, the oldest messages will be
-    /// dropped to shrink the channel.
-    fn set_capacity(&mut self, new_cap: usize) {
-        self.capacity = new_cap;
-        if new_cap > self.queue.capacity() {
-            let diff = new_cap - self.queue.capacity();
-            self.queue.reserve(diff);
-        }
-
-        // Ensure queue doesn't have more than `new_cap` messages.
-        if new_cap < self.queue.len() {
-            let diff = self.queue.len() - new_cap;
-            self.queue.drain(0..diff);
-            self.head_pos += diff as u64;
-        }
-    }
-
     /// Close the channel if there aren't any receivers present anymore
     fn close_channel(&mut self) {
         if self.receiver_count == 0 && self.inactive_receiver_count == 0 {
             self.close();
         }
+    }
+}
+
+impl<T, L: AdjustableCapacityLimiter<T>> Inner<T, L> {
+    /// Adjust the channel capacity.
+    ///
+    /// There are times when you need to change the channel's capacity after creating it. If
+    /// needed, the oldest messages will be dropped to shrink the channel.
+    fn adjust_capacity(&mut self, mut msg: L::Adjustment) -> Result<(), L::Error> {
+        while let Err(e) = self
+            .capacity
+            .try_adjust(&mut msg, self.queue.iter().map(|(m, _)| m))
+        {
+            if !self.capacity.error_is_fatal(&e) {
+                if let Some((elt, _)) = self.queue.pop_front() {
+                    self.head_pos += 1;
+                    self.capacity
+                        .remove(&elt, self.queue.iter().map(|(m, _)| m));
+                } else {
+                    // Failed to adjust and the channel is empty => fatal
+                    return Err(e);
+                }
+            } else {
+                return Err(e);
+            }
+        }
+        Ok(())
     }
 }
 
@@ -290,8 +471,8 @@ impl<T> Inner<T> {
 ///
 /// The channel can also be closed manually by calling [`Sender::close()`].
 #[derive(Debug)]
-pub struct Sender<T> {
-    inner: Arc<Mutex<Inner<T>>>,
+pub struct Sender<T, L: CapacityLimiter<T> = ElementCountLimiter> {
+    inner: Arc<Mutex<Inner<T, L>>>,
 }
 
 impl<T> Sender<T> {
@@ -306,7 +487,7 @@ impl<T> Sender<T> {
     /// assert_eq!(s.capacity(), 5);
     /// ```
     pub fn capacity(&self) -> usize {
-        self.inner.lock().unwrap().capacity
+        self.inner.lock().unwrap().capacity.0
     }
 
     /// Set the channel capacity.
@@ -340,9 +521,11 @@ impl<T> Sender<T> {
     /// assert_eq!(s.try_broadcast(2), Err(TrySendError::Full(2)));
     /// ```
     pub fn set_capacity(&mut self, new_cap: usize) {
-        self.inner.lock().unwrap().set_capacity(new_cap);
+        let _ = self.inner.lock().unwrap().adjust_capacity(new_cap);
     }
+}
 
+impl<T, L: CapacityLimiter<T>> Sender<T, L> {
     /// If overflow mode is enabled on this channel.
     ///
     /// # Examples
@@ -462,9 +645,7 @@ impl<T> Sender<T> {
     /// # });
     /// ```
     pub fn is_full(&self) -> bool {
-        let inner = self.inner.lock().unwrap();
-
-        inner.queue.len() == inner.capacity
+        self.inner.lock().unwrap().is_full()
     }
 
     /// Returns the number of messages in the channel.
@@ -550,7 +731,46 @@ impl<T> Sender<T> {
     }
 }
 
-impl<T: Clone> Sender<T> {
+impl<T, L: CapacityLimiter<T> + Clone> Sender<T, L> {
+    /// Returns the current channel capacity limiter.
+    pub fn capacity_limiter(&self) -> L {
+        self.inner.lock().unwrap().capacity.clone()
+    }
+}
+
+impl<T, L: AdjustableCapacityLimiter<T>> Sender<T, L> {
+    /// Adjust the channel capacity.
+    ///
+    /// There are times when you need to change the channel's capacity after creating it. If
+    /// needed, the oldest messages will be dropped to shrink the channel.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use async_broadcast::{broadcast, TrySendError, TryRecvError};
+    ///
+    /// let (mut s, mut r) = broadcast::<i32>(3);
+    /// s.try_broadcast(1).unwrap();
+    /// s.try_broadcast(2).unwrap();
+    /// s.try_broadcast(3).unwrap();
+    ///
+    /// s.adjust_capacity(1);
+    /// assert_eq!(r.try_recv(), Err(TryRecvError::Overflowed(2)));
+    /// assert_eq!(r.try_recv().unwrap(), 3);
+    /// assert_eq!(r.try_recv(), Err(TryRecvError::Empty));
+    /// s.try_broadcast(1).unwrap();
+    /// assert_eq!(s.try_broadcast(2), Err(TrySendError::Full(2)));
+    ///
+    /// s.adjust_capacity(2);
+    /// s.try_broadcast(2).unwrap();
+    /// assert_eq!(s.try_broadcast(2), Err(TrySendError::Full(2)));
+    /// ```
+    pub fn adjust_capacity(&mut self, adjustment: L::Adjustment) {
+        let _ = self.inner.lock().unwrap().adjust_capacity(adjustment);
+    }
+}
+
+impl<T: Clone, L: CapacityLimiter<T>> Sender<T, L> {
     /// Broadcasts a message on the channel.
     ///
     /// If the channel is full, this method waits until there is space for a message unless overflow
@@ -573,7 +793,7 @@ impl<T: Clone> Sender<T> {
     /// assert_eq!(s.broadcast(2).await, Err(SendError(2)));
     /// # });
     /// ```
-    pub fn broadcast(&self, msg: T) -> Send<'_, T> {
+    pub fn broadcast(&self, msg: T) -> Send<'_, T, L> {
         Send {
             sender: self,
             listener: None,
@@ -609,25 +829,35 @@ impl<T: Clone> Sender<T> {
             Ok(i) => i,
             Err(_) => return Err(TrySendError::Closed(msg)),
         };
+        let inner = &mut *inner;
         if inner.is_closed {
             return Err(TrySendError::Closed(msg));
         } else if inner.receiver_count == 0 {
             assert!(inner.inactive_receiver_count != 0);
 
             return Err(TrySendError::Inactive(msg));
-        } else if inner.queue.len() == inner.capacity {
-            if inner.overflow {
+        }
+
+        while let Err(e) = inner
+            .capacity
+            .try_add(&msg, inner.queue.iter().map(|(m, _)| m))
+        {
+            if inner.overflow && !inner.capacity.error_is_fatal(&e) {
                 // Make room by popping a message.
                 ret = inner.queue.pop_front().map(|(m, _)| m);
-            } else {
-                return Err(TrySendError::Full(msg));
+                if let Some(elt) = &ret {
+                    inner.head_pos += 1;
+                    inner
+                        .capacity
+                        .remove(&elt, inner.queue.iter().map(|(m, _)| m));
+                    // retry the add
+                    continue;
+                }
             }
+            return Err(TrySendError::Full(msg));
         }
         let receiver_count = inner.receiver_count;
         inner.queue.push_back((msg, receiver_count));
-        if ret.is_some() {
-            inner.head_pos += 1;
-        }
 
         // Notify all awaiting receive operations.
         inner.recv_ops.notify(usize::MAX);
@@ -636,7 +866,7 @@ impl<T: Clone> Sender<T> {
     }
 }
 
-impl<T> Drop for Sender<T> {
+impl<T, L: CapacityLimiter<T>> Drop for Sender<T, L> {
     fn drop(&mut self) {
         let mut inner = match self.inner.lock() {
             Ok(i) => i,
@@ -650,7 +880,7 @@ impl<T> Drop for Sender<T> {
     }
 }
 
-impl<T> Clone for Sender<T> {
+impl<T, L: CapacityLimiter<T>> Clone for Sender<T, L> {
     fn clone(&self) -> Self {
         self.inner.lock().unwrap().sender_count += 1;
 
@@ -667,8 +897,8 @@ impl<T> Clone for Sender<T> {
 /// [`Receiver::deactivate`] if you would like the channel to remain open without keeping active
 /// receivers around.
 #[derive(Debug)]
-pub struct Receiver<T> {
-    inner: Arc<Mutex<Inner<T>>>,
+pub struct Receiver<T, L: CapacityLimiter<T> = ElementCountLimiter> {
+    inner: Arc<Mutex<Inner<T, L>>>,
     pos: u64,
 
     /// Listens for a send or close event to unblock this stream.
@@ -687,7 +917,7 @@ impl<T> Receiver<T> {
     /// assert_eq!(r.capacity(), 5);
     /// ```
     pub fn capacity(&self) -> usize {
-        self.inner.lock().unwrap().capacity
+        self.inner.lock().unwrap().capacity.0
     }
 
     /// Set the channel capacity.
@@ -721,9 +951,11 @@ impl<T> Receiver<T> {
     /// assert_eq!(s.try_broadcast(2), Err(TrySendError::Full(2)));
     /// ```
     pub fn set_capacity(&mut self, new_cap: usize) {
-        self.inner.lock().unwrap().set_capacity(new_cap);
+        let _ = self.inner.lock().unwrap().adjust_capacity(new_cap);
     }
+}
 
+impl<T, L: CapacityLimiter<T>> Receiver<T, L> {
     /// If overflow mode is enabled on this channel.
     ///
     /// # Examples
@@ -843,9 +1075,7 @@ impl<T> Receiver<T> {
     /// # });
     /// ```
     pub fn is_full(&self) -> bool {
-        let inner = self.inner.lock().unwrap();
-
-        inner.queue.len() == inner.capacity
+        self.inner.lock().unwrap().is_full()
     }
 
     /// Returns the number of messages in the channel.
@@ -956,7 +1186,7 @@ impl<T> Receiver<T> {
     /// assert_eq!(r.recv().await, Ok(10));
     /// # });
     /// ```
-    pub fn deactivate(self) -> InactiveReceiver<T> {
+    pub fn deactivate(self) -> InactiveReceiver<T, L> {
         // Drop::drop impl of Receiver will take care of `receiver_count`.
         self.inner.lock().unwrap().inactive_receiver_count += 1;
 
@@ -966,7 +1196,7 @@ impl<T> Receiver<T> {
     }
 }
 
-impl<T: Clone> Receiver<T> {
+impl<T: Clone, L: CapacityLimiter<T>> Receiver<T, L> {
     /// Receives a message from the channel.
     ///
     /// If the channel is empty, this method waits until there is a message.
@@ -996,7 +1226,7 @@ impl<T: Clone> Receiver<T> {
     /// assert_eq!(r2.recv().await, Err(RecvError::Closed));
     /// # });
     /// ```
-    pub fn recv(&mut self) -> Recv<'_, T> {
+    pub fn recv(&mut self) -> Recv<'_, T, L> {
         Recv {
             receiver: self,
             listener: None,
@@ -1043,7 +1273,46 @@ impl<T: Clone> Receiver<T> {
     }
 }
 
-impl<T> Drop for Receiver<T> {
+impl<T, L: CapacityLimiter<T> + Clone> Receiver<T, L> {
+    /// Returns the current channel capacity limiter.
+    pub fn capacity_limiter(&self) -> L {
+        self.inner.lock().unwrap().capacity.clone()
+    }
+}
+
+impl<T, L: AdjustableCapacityLimiter<T>> Receiver<T, L> {
+    /// Adjust the channel capacity.
+    ///
+    /// There are times when you need to change the channel's capacity after creating it. If
+    /// needed, the oldest messages will be dropped to shrink the channel.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use async_broadcast::{broadcast, TrySendError, TryRecvError};
+    ///
+    /// let (mut s, mut r) = broadcast::<i32>(3);
+    /// s.try_broadcast(1).unwrap();
+    /// s.try_broadcast(2).unwrap();
+    /// s.try_broadcast(3).unwrap();
+    ///
+    /// r.adjust_capacity(1);
+    /// assert_eq!(r.try_recv(), Err(TryRecvError::Overflowed(2)));
+    /// assert_eq!(r.try_recv().unwrap(), 3);
+    /// assert_eq!(r.try_recv(), Err(TryRecvError::Empty));
+    /// s.try_broadcast(1).unwrap();
+    /// assert_eq!(s.try_broadcast(2), Err(TrySendError::Full(2)));
+    ///
+    /// r.adjust_capacity(2);
+    /// s.try_broadcast(2).unwrap();
+    /// assert_eq!(s.try_broadcast(2), Err(TrySendError::Full(2)));
+    /// ```
+    pub fn adjust_capacity(&mut self, adjustment: L::Adjustment) {
+        let _ = self.inner.lock().unwrap().adjust_capacity(adjustment);
+    }
+}
+
+impl<T, L: CapacityLimiter<T>> Drop for Receiver<T, L> {
     fn drop(&mut self) {
         let mut inner = match self.inner.lock() {
             Ok(i) => i,
@@ -1066,7 +1335,7 @@ impl<T> Drop for Receiver<T> {
     }
 }
 
-impl<T> Clone for Receiver<T> {
+impl<T, L: CapacityLimiter<T>> Clone for Receiver<T, L> {
     fn clone(&self) -> Self {
         let mut inner = self.inner.lock().unwrap();
         inner.receiver_count += 1;
@@ -1078,7 +1347,7 @@ impl<T> Clone for Receiver<T> {
     }
 }
 
-impl<T: Clone> Stream for Receiver<T> {
+impl<T: Clone, L: CapacityLimiter<T>> Stream for Receiver<T, L> {
     type Item = T;
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
@@ -1129,11 +1398,23 @@ impl<T: Clone> Stream for Receiver<T> {
     }
 }
 
-impl<T: Clone> futures_core::stream::FusedStream for Receiver<T> {
+impl<T: Clone, L: CapacityLimiter<T>> futures_core::stream::FusedStream for Receiver<T, L> {
     fn is_terminated(&self) -> bool {
         let inner = self.inner.lock().unwrap();
 
         inner.is_closed && inner.queue.is_empty()
+    }
+}
+
+/// An error caused by exceeding a channel's capacity.
+#[derive(PartialEq, Eq, Clone, Copy, Debug)]
+pub struct FullError;
+
+impl error::Error for FullError {}
+
+impl fmt::Display for FullError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "channel is full")
     }
 }
 
@@ -1318,15 +1599,15 @@ impl fmt::Display for TryRecvError {
 /// A future returned by [`Sender::broadcast()`].
 #[derive(Debug)]
 #[must_use = "futures do nothing unless .awaited"]
-pub struct Send<'a, T> {
-    sender: &'a Sender<T>,
+pub struct Send<'a, T, L: CapacityLimiter<T> = ElementCountLimiter> {
+    sender: &'a Sender<T, L>,
     listener: Option<EventListener>,
     msg: Option<T>,
 }
 
-impl<'a, T> Unpin for Send<'a, T> {}
+impl<'a, T, L: CapacityLimiter<T>> Unpin for Send<'a, T, L> {}
 
-impl<'a, T: Clone> Future for Send<'a, T> {
+impl<'a, T: Clone, L: CapacityLimiter<T>> Future for Send<'a, T, L> {
     type Output = Result<Option<T>, SendError<T>>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
@@ -1340,8 +1621,8 @@ impl<'a, T: Clone> Future for Send<'a, T> {
                 Ok(msg) => {
                     let inner = this.sender.inner.lock().unwrap();
 
-                    if inner.queue.len() < inner.capacity {
-                        // Not full still, so notify the next awaiting sender.
+                    if !inner.is_full() {
+                        // Notify the next awaiting sender.
                         inner.send_ops.notify(1);
                     }
 
@@ -1371,14 +1652,14 @@ impl<'a, T: Clone> Future for Send<'a, T> {
 /// A future returned by [`Receiver::recv()`].
 #[derive(Debug)]
 #[must_use = "futures do nothing unless .awaited"]
-pub struct Recv<'a, T> {
-    receiver: &'a mut Receiver<T>,
+pub struct Recv<'a, T, L: CapacityLimiter<T> = ElementCountLimiter> {
+    receiver: &'a mut Receiver<T, L>,
     listener: Option<EventListener>,
 }
 
-impl<'a, T> Unpin for Recv<'a, T> {}
+impl<'a, T, L: CapacityLimiter<T>> Unpin for Recv<'a, T, L> {}
 
-impl<'a, T: Clone> Future for Recv<'a, T> {
+impl<'a, T: Clone, L: CapacityLimiter<T>> Future for Recv<'a, T, L> {
     type Output = Result<T, RecvError>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
@@ -1423,11 +1704,11 @@ impl<'a, T: Clone> Future for Recv<'a, T> {
 /// An inactive receiver is a receiver that is unable to receive messages. It's only useful for
 /// keeping a channel open even when no associated active receivers exist.
 #[derive(Debug)]
-pub struct InactiveReceiver<T> {
-    inner: Arc<Mutex<Inner<T>>>,
+pub struct InactiveReceiver<T, L: CapacityLimiter<T> = ElementCountLimiter> {
+    inner: Arc<Mutex<Inner<T, L>>>,
 }
 
-impl<T> InactiveReceiver<T> {
+impl<T, L: CapacityLimiter<T>> InactiveReceiver<T, L> {
     /// Convert to an activate [`Receiver`].
     ///
     /// Consumes `self`. Use [`InactiveReceiver::activate_cloned`] if you want to keep `self`.
@@ -1445,7 +1726,7 @@ impl<T> InactiveReceiver<T> {
     /// assert_eq!(s.try_broadcast(10), Ok(None));
     /// assert_eq!(r.try_recv(), Ok(10));
     /// ```
-    pub fn activate(self) -> Receiver<T> {
+    pub fn activate(self) -> Receiver<T, L> {
         self.activate_cloned()
     }
 
@@ -1464,7 +1745,7 @@ impl<T> InactiveReceiver<T> {
     /// assert_eq!(s.try_broadcast(10), Ok(None));
     /// assert_eq!(r.try_recv(), Ok(10));
     /// ```
-    pub fn activate_cloned(&self) -> Receiver<T> {
+    pub fn activate_cloned(&self) -> Receiver<T, L> {
         let mut inner = self.inner.lock().unwrap();
         inner.receiver_count += 1;
 
@@ -1479,24 +1760,6 @@ impl<T> InactiveReceiver<T> {
             pos: inner.head_pos + inner.queue.len() as u64,
             listener: None,
         }
-    }
-
-    /// Returns the channel capacity.
-    ///
-    /// See [`Receiver::capacity`] documentation for examples.
-    pub fn capacity(&self) -> usize {
-        self.inner.lock().unwrap().capacity
-    }
-
-    /// Set the channel capacity.
-    ///
-    /// There are times when you need to change the channel's capacity after creating it. If the
-    /// `new_cap` is less than the number of messages in the channel, the oldest messages will be
-    /// dropped to shrink the channel.
-    ///
-    /// See [`Receiver::set_capacity`] documentation for examples.
-    pub fn set_capacity(&mut self, new_cap: usize) {
-        self.inner.lock().unwrap().set_capacity(new_cap);
     }
 
     /// If overflow mode is enabled on this channel.
@@ -1545,9 +1808,7 @@ impl<T> InactiveReceiver<T> {
     ///
     /// See [`Receiver::is_full`] documentation for examples.
     pub fn is_full(&self) -> bool {
-        let inner = self.inner.lock().unwrap();
-
-        inner.queue.len() == inner.capacity
+        self.inner.lock().unwrap().is_full()
     }
 
     /// Returns the number of messages in the channel.
@@ -1608,7 +1869,27 @@ impl<T> InactiveReceiver<T> {
     }
 }
 
-impl<T> Clone for InactiveReceiver<T> {
+impl<T> InactiveReceiver<T> {
+    /// Returns the channel capacity.
+    ///
+    /// See [`Receiver::capacity`] documentation for examples.
+    pub fn capacity(&self) -> usize {
+        self.inner.lock().unwrap().capacity.0
+    }
+
+    /// Set the channel capacity.
+    ///
+    /// There are times when you need to change the channel's capacity after creating it. If the
+    /// `new_cap` is less than the number of messages in the channel, the oldest messages will be
+    /// dropped to shrink the channel.
+    ///
+    /// See [`Receiver::set_capacity`] documentation for examples.
+    pub fn set_capacity(&mut self, new_cap: usize) {
+        let _ = self.inner.lock().unwrap().adjust_capacity(new_cap);
+    }
+}
+
+impl<T, L: CapacityLimiter<T>> Clone for InactiveReceiver<T, L> {
     fn clone(&self) -> Self {
         if let Ok(mut inner) = self.inner.lock() {
             inner.inactive_receiver_count += 1;
@@ -1620,7 +1901,7 @@ impl<T> Clone for InactiveReceiver<T> {
     }
 }
 
-impl<T> Drop for InactiveReceiver<T> {
+impl<T, L: CapacityLimiter<T>> Drop for InactiveReceiver<T, L> {
     fn drop(&mut self) {
         if let Ok(mut inner) = self.inner.lock() {
             inner.inactive_receiver_count -= 1;
