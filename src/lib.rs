@@ -495,6 +495,11 @@ impl<T, L: AdjustableCapacityLimiter<T>> Inner<T, L> {
         }
         Ok(())
     }
+
+    fn try_adjust_capacity(&mut self, mut msg: L::Adjustment) -> Result<(), L::Error> {
+        self.capacity
+            .try_adjust(&mut msg, self.queue.iter().map(|(m, _)| m))
+    }
 }
 
 /// The sending side of the broadcast channel.
@@ -800,6 +805,39 @@ impl<T, L: AdjustableCapacityLimiter<T>> Sender<T, L> {
     /// ```
     pub fn adjust_capacity(&mut self, adjustment: L::Adjustment) {
         let _ = self.inner.lock().unwrap().adjust_capacity(adjustment);
+    }
+
+    /// Try to adjust the channel capacity without dropping elements.
+    ///
+    /// This is identical to [`Self::adjust_capacity`], but will fail instead of dropping elements.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use async_broadcast::{broadcast, TrySendError, TryRecvError};
+    ///
+    /// let (mut s, mut r) = broadcast::<i32>(3);
+    /// s.try_broadcast(1).unwrap();
+    /// s.try_broadcast(2).unwrap();
+    /// s.try_broadcast(3).unwrap();
+    ///
+    /// assert!(s.try_adjust_capacity(1).is_err());
+    /// assert_eq!(r.try_recv().unwrap(), 1);
+    /// assert_eq!(r.try_recv().unwrap(), 2);
+    ///
+    /// s.try_adjust_capacity(1).unwrap();
+    /// assert_eq!(r.try_recv().unwrap(), 3);
+    /// assert_eq!(r.try_recv(), Err(TryRecvError::Empty));
+    ///
+    /// s.try_broadcast(1).unwrap();
+    /// assert!(matches!(s.try_broadcast(2), Err(TrySendError::Full { msg: 2, .. })));
+    ///
+    /// s.try_adjust_capacity(2).unwrap();
+    /// s.try_broadcast(2).unwrap();
+    /// assert!(matches!(s.try_broadcast(2), Err(TrySendError::Full { msg: 2, .. })));
+    /// ```
+    pub fn try_adjust_capacity(&mut self, adjustment: L::Adjustment) -> Result<(), L::Error> {
+        self.inner.lock().unwrap().try_adjust_capacity(adjustment)
     }
 }
 
@@ -1347,6 +1385,39 @@ impl<T, L: AdjustableCapacityLimiter<T>> Receiver<T, L> {
     /// ```
     pub fn adjust_capacity(&mut self, adjustment: L::Adjustment) {
         let _ = self.inner.lock().unwrap().adjust_capacity(adjustment);
+    }
+
+    /// Try to adjust the channel capacity without dropping elements.
+    ///
+    /// This is identical to [`Self::adjust_capacity`], but will fail instead of dropping elements.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use async_broadcast::{broadcast, TrySendError, TryRecvError};
+    ///
+    /// let (mut s, mut r) = broadcast::<i32>(3);
+    /// s.try_broadcast(1).unwrap();
+    /// s.try_broadcast(2).unwrap();
+    /// s.try_broadcast(3).unwrap();
+    ///
+    /// assert!(r.try_adjust_capacity(1).is_err());
+    /// assert_eq!(r.try_recv().unwrap(), 1);
+    /// assert_eq!(r.try_recv().unwrap(), 2);
+    ///
+    /// r.try_adjust_capacity(1).unwrap();
+    /// assert_eq!(r.try_recv().unwrap(), 3);
+    /// assert_eq!(r.try_recv(), Err(TryRecvError::Empty));
+    ///
+    /// s.try_broadcast(1).unwrap();
+    /// assert!(matches!(s.try_broadcast(2), Err(TrySendError::Full { msg: 2, .. })));
+    ///
+    /// r.try_adjust_capacity(2).unwrap();
+    /// s.try_broadcast(2).unwrap();
+    /// assert!(matches!(s.try_broadcast(2), Err(TrySendError::Full { msg: 2, .. })));
+    /// ```
+    pub fn try_adjust_capacity(&mut self, adjustment: L::Adjustment) -> Result<(), L::Error> {
+        self.inner.lock().unwrap().try_adjust_capacity(adjustment)
     }
 }
 
