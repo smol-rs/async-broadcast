@@ -198,8 +198,9 @@ impl<T> Inner<T> {
                 .try_into()
                 .expect("Head position more than usize::MAX behind a receiver"),
             None => {
+                let count = self.head_pos - *pos;
                 *pos = self.head_pos;
-                return Err(TryRecvError::Overflowed);
+                return Err(TryRecvError::Overflowed(count));
             }
         };
 
@@ -327,7 +328,7 @@ impl<T> Sender<T> {
     ///
     /// s.set_capacity(1);
     /// assert_eq!(s.capacity(), 1);
-    /// assert_eq!(r.try_recv(), Err(TryRecvError::Overflowed));
+    /// assert_eq!(r.try_recv(), Err(TryRecvError::Overflowed(2)));
     /// assert_eq!(r.try_recv().unwrap(), 3);
     /// assert_eq!(r.try_recv(), Err(TryRecvError::Empty));
     /// s.try_broadcast(1).unwrap();
@@ -374,7 +375,7 @@ impl<T> Sender<T> {
     /// assert_eq!(s.try_broadcast(3).unwrap(), Some(1));
     /// assert_eq!(s.try_broadcast(4).unwrap(), Some(2));
     ///
-    /// assert_eq!(r.try_recv(), Err(TryRecvError::Overflowed));
+    /// assert_eq!(r.try_recv(), Err(TryRecvError::Overflowed(2)));
     /// assert_eq!(r.try_recv().unwrap(), 3);
     /// assert_eq!(r.try_recv().unwrap(), 4);
     /// assert_eq!(r.try_recv(), Err(TryRecvError::Empty));
@@ -708,7 +709,7 @@ impl<T> Receiver<T> {
     ///
     /// r.set_capacity(1);
     /// assert_eq!(r.capacity(), 1);
-    /// assert_eq!(r.try_recv(), Err(TryRecvError::Overflowed));
+    /// assert_eq!(r.try_recv(), Err(TryRecvError::Overflowed(2)));
     /// assert_eq!(r.try_recv().unwrap(), 3);
     /// assert_eq!(r.try_recv(), Err(TryRecvError::Empty));
     /// s.try_broadcast(1).unwrap();
@@ -755,7 +756,7 @@ impl<T> Receiver<T> {
     /// assert_eq!(s.try_broadcast(3).unwrap(), Some(1));
     /// assert_eq!(s.try_broadcast(4).unwrap(), Some(2));
     ///
-    /// assert_eq!(r.try_recv(), Err(TryRecvError::Overflowed));
+    /// assert_eq!(r.try_recv(), Err(TryRecvError::Overflowed(2)));
     /// assert_eq!(r.try_recv().unwrap(), 3);
     /// assert_eq!(r.try_recv().unwrap(), 4);
     /// assert_eq!(r.try_recv(), Err(TryRecvError::Empty));
@@ -1053,7 +1054,7 @@ impl<T> Drop for Receiver<T> {
         loop {
             match inner.try_recv_at(&mut self.pos) {
                 Ok(_) => continue,
-                Err(TryRecvError::Overflowed) => continue,
+                Err(TryRecvError::Overflowed(_)) => continue,
                 Err(TryRecvError::Closed) => break,
                 Err(TryRecvError::Empty) => break,
             }
@@ -1101,7 +1102,7 @@ impl<T: Clone> Stream for Receiver<T> {
                         self.listener = None;
                         return Poll::Ready(None);
                     }
-                    Err(TryRecvError::Overflowed) => continue,
+                    Err(TryRecvError::Overflowed(_)) => continue,
                     Err(TryRecvError::Empty) => {}
                 }
 
@@ -1238,7 +1239,9 @@ impl<T> fmt::Display for TrySendError<T> {
 pub enum RecvError {
     /// The channel has overflowed since the last element was seen.  Future recv operations will
     /// succeed, but some messages have been skipped.
-    Overflowed,
+    ///
+    /// Contains the number of messages missed.
+    Overflowed(u64),
 
     /// The channel is empty and closed.
     Closed,
@@ -1249,7 +1252,7 @@ impl error::Error for RecvError {}
 impl fmt::Display for RecvError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Overflowed => write!(f, "receiving skipped some messages"),
+            Self::Overflowed(n) => write!(f, "receiving skipped {} messages", n),
             Self::Closed => write!(f, "receiving from an empty and closed channel"),
         }
     }
@@ -1260,7 +1263,7 @@ impl fmt::Display for RecvError {
 pub enum TryRecvError {
     /// The channel has overflowed since the last element was seen.  Future recv operations will
     /// succeed, but some messages have been skipped.
-    Overflowed,
+    Overflowed(u64),
 
     /// The channel is empty but not closed.
     Empty,
@@ -1275,7 +1278,7 @@ impl TryRecvError {
         match self {
             TryRecvError::Empty => true,
             TryRecvError::Closed => false,
-            TryRecvError::Overflowed => false,
+            TryRecvError::Overflowed(_) => false,
         }
     }
 
@@ -1284,7 +1287,7 @@ impl TryRecvError {
         match self {
             TryRecvError::Empty => false,
             TryRecvError::Closed => true,
-            TryRecvError::Overflowed => false,
+            TryRecvError::Overflowed(_) => false,
         }
     }
 
@@ -1293,7 +1296,7 @@ impl TryRecvError {
         match self {
             TryRecvError::Empty => false,
             TryRecvError::Closed => false,
-            TryRecvError::Overflowed => true,
+            TryRecvError::Overflowed(_) => true,
         }
     }
 }
@@ -1305,7 +1308,9 @@ impl fmt::Display for TryRecvError {
         match *self {
             TryRecvError::Empty => write!(f, "receiving from an empty channel"),
             TryRecvError::Closed => write!(f, "receiving from an empty and closed channel"),
-            TryRecvError::Overflowed => write!(f, "receiving operation observed an overflow"),
+            TryRecvError::Overflowed(n) => {
+                write!(f, "receiving operation observed {} lost messages", n)
+            }
         }
     }
 }
@@ -1384,7 +1389,9 @@ impl<'a, T: Clone> Future for Recv<'a, T> {
             match this.receiver.try_recv() {
                 Ok(msg) => return Poll::Ready(Ok(msg)),
                 Err(TryRecvError::Closed) => return Poll::Ready(Err(RecvError::Closed)),
-                Err(TryRecvError::Overflowed) => return Poll::Ready(Err(RecvError::Overflowed)),
+                Err(TryRecvError::Overflowed(n)) => {
+                    return Poll::Ready(Err(RecvError::Overflowed(n)))
+                }
                 Err(TryRecvError::Empty) => {}
             }
 

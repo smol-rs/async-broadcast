@@ -168,7 +168,7 @@ fn channel_shrink() {
 
     r1.set_capacity(2);
 
-    assert_eq!(r1.try_recv(), Err(TryRecvError::Overflowed));
+    assert_eq!(r1.try_recv(), Err(TryRecvError::Overflowed(2)));
     assert_eq!(r1.try_recv().unwrap(), 3);
     assert_eq!(r1.try_recv().unwrap(), 4);
     assert_eq!(r1.try_recv(), Err(TryRecvError::Empty));
@@ -224,7 +224,7 @@ fn overflow() {
         })
         .run();
 
-    assert_eq!(r1.try_recv(), Err(TryRecvError::Overflowed));
+    assert_eq!(r1.try_recv(), Err(TryRecvError::Overflowed(1)));
     assert_eq!(r1.try_recv().unwrap(), 8);
     assert_eq!(r1.try_recv().unwrap(), 9);
 }
