@@ -101,6 +101,7 @@ mod doctests {
 }
 
 use std::collections::VecDeque;
+use std::convert::TryInto;
 use std::error;
 use std::fmt;
 use std::future::Future;
@@ -147,8 +148,7 @@ pub fn broadcast<T>(cap: usize) -> (Sender<T>, Receiver<T>) {
         receiver_count: 1,
         inactive_receiver_count: 0,
         sender_count: 1,
-        send_count: 0,
-        replaced_count: 0,
+        head_pos: 0,
         is_closed: false,
         send_ops: Event::new(),
         recv_ops: Event::new(),
@@ -159,9 +159,7 @@ pub fn broadcast<T>(cap: usize) -> (Sender<T>, Receiver<T>) {
     };
     let r = Receiver {
         inner,
-        recv_count: 0,
-        last_send_count: 0,
-        last_replaced_count: 0,
+        pos: 0,
         listener: None,
     };
 
@@ -177,8 +175,8 @@ struct Inner<T> {
     receiver_count: usize,
     inactive_receiver_count: usize,
     sender_count: usize,
-    send_count: usize,
-    replaced_count: usize,
+    /// Send sequence number of the front of the queue
+    head_pos: u64,
     overflow: bool,
 
     is_closed: bool,
@@ -191,6 +189,56 @@ struct Inner<T> {
 }
 
 impl<T> Inner<T> {
+    /// Try receiving at the given position, returning either the element or a reference to it.
+    ///
+    /// Result is used here instead of Cow because we don't have a Clone bound on T.
+    fn try_recv_at(&mut self, pos: &mut u64) -> Result<Result<T, &T>, TryRecvError> {
+        let i = match pos.checked_sub(self.head_pos) {
+            Some(i) => i
+                .try_into()
+                .expect("Head position more than usize::MAX behind a receiver"),
+            None => {
+                let count = self.head_pos - *pos;
+                *pos = self.head_pos;
+                return Err(TryRecvError::Overflowed(count));
+            }
+        };
+
+        let last_waiter;
+        if let Some((_elt, waiters)) = self.queue.get_mut(i) {
+            *pos += 1;
+            *waiters -= 1;
+            last_waiter = *waiters == 0;
+        } else {
+            debug_assert_eq!(i, self.queue.len());
+            if self.is_closed {
+                return Err(TryRecvError::Closed);
+            } else {
+                return Err(TryRecvError::Empty);
+            }
+        }
+
+        // If we read from the front of the queue and this is the last receiver reading it
+        // we can pop the queue instead of cloning the message
+        if last_waiter {
+            // Only the first element of the queue should have 0 waiters
+            assert_eq!(i, 0);
+
+            // Remove the element from the queue, adjust space, and notify senders
+            let elt = self.queue.pop_front().unwrap().0;
+            self.head_pos += 1;
+            if !self.overflow {
+                // Notify 1 awaiting senders that there is now room. If there is still room in the
+                // queue, the notified operation will notify another awaiting sender.
+                self.send_ops.notify(1);
+            }
+
+            Ok(Ok(elt))
+        } else {
+            Ok(Err(&self.queue[i].0))
+        }
+    }
+
     /// Closes the channel and notifies all waiting operations.
     ///
     /// Returns `true` if this call has closed the channel and it was not closed already.
@@ -223,7 +271,7 @@ impl<T> Inner<T> {
         if new_cap < self.queue.len() {
             let diff = self.queue.len() - new_cap;
             self.queue.drain(0..diff);
-            self.send_count -= diff;
+            self.head_pos += diff as u64;
         }
     }
 
@@ -280,6 +328,7 @@ impl<T> Sender<T> {
     ///
     /// s.set_capacity(1);
     /// assert_eq!(s.capacity(), 1);
+    /// assert_eq!(r.try_recv(), Err(TryRecvError::Overflowed(2)));
     /// assert_eq!(r.try_recv().unwrap(), 3);
     /// assert_eq!(r.try_recv(), Err(TryRecvError::Empty));
     /// s.try_broadcast(1).unwrap();
@@ -326,6 +375,7 @@ impl<T> Sender<T> {
     /// assert_eq!(s.try_broadcast(3).unwrap(), Some(1));
     /// assert_eq!(s.try_broadcast(4).unwrap(), Some(2));
     ///
+    /// assert_eq!(r.try_recv(), Err(TryRecvError::Overflowed(2)));
     /// assert_eq!(r.try_recv().unwrap(), 3);
     /// assert_eq!(r.try_recv().unwrap(), 4);
     /// assert_eq!(r.try_recv(), Err(TryRecvError::Empty));
@@ -351,7 +401,7 @@ impl<T> Sender<T> {
     /// assert!(s.close());
     ///
     /// assert_eq!(r.recv().await.unwrap(), 1);
-    /// assert_eq!(r.recv().await, Err(RecvError));
+    /// assert_eq!(r.recv().await, Err(RecvError::Closed));
     /// # });
     /// ```
     pub fn close(&self) -> bool {
@@ -576,9 +626,7 @@ impl<T: Clone> Sender<T> {
         let receiver_count = inner.receiver_count;
         inner.queue.push_back((msg, receiver_count));
         if ret.is_some() {
-            inner.replaced_count += 1;
-        } else {
-            inner.send_count += 1;
+            inner.head_pos += 1;
         }
 
         // Notify all awaiting receive operations.
@@ -621,9 +669,7 @@ impl<T> Clone for Sender<T> {
 #[derive(Debug)]
 pub struct Receiver<T> {
     inner: Arc<Mutex<Inner<T>>>,
-    recv_count: usize,
-    last_send_count: usize,
-    last_replaced_count: usize,
+    pos: u64,
 
     /// Listens for a send or close event to unblock this stream.
     listener: Option<EventListener>,
@@ -663,6 +709,7 @@ impl<T> Receiver<T> {
     ///
     /// r.set_capacity(1);
     /// assert_eq!(r.capacity(), 1);
+    /// assert_eq!(r.try_recv(), Err(TryRecvError::Overflowed(2)));
     /// assert_eq!(r.try_recv().unwrap(), 3);
     /// assert_eq!(r.try_recv(), Err(TryRecvError::Empty));
     /// s.try_broadcast(1).unwrap();
@@ -709,6 +756,7 @@ impl<T> Receiver<T> {
     /// assert_eq!(s.try_broadcast(3).unwrap(), Some(1));
     /// assert_eq!(s.try_broadcast(4).unwrap(), Some(2));
     ///
+    /// assert_eq!(r.try_recv(), Err(TryRecvError::Overflowed(2)));
     /// assert_eq!(r.try_recv().unwrap(), 3);
     /// assert_eq!(r.try_recv().unwrap(), 4);
     /// assert_eq!(r.try_recv(), Err(TryRecvError::Empty));
@@ -734,7 +782,7 @@ impl<T> Receiver<T> {
     /// assert!(s.close());
     ///
     /// assert_eq!(r.recv().await.unwrap(), 1);
-    /// assert_eq!(r.recv().await, Err(RecvError));
+    /// assert_eq!(r.recv().await, Err(RecvError::Closed));
     /// # });
     /// ```
     pub fn close(&self) -> bool {
@@ -926,6 +974,10 @@ impl<T: Clone> Receiver<T> {
     /// If the channel is closed, this method receives a message or returns an error if there are
     /// no more messages.
     ///
+    /// If this receiver has missed a message (only possible if overflow mode is enabled), then
+    /// this method returns an error and readjusts its cursor to point to the first available
+    /// message.
+    ///
     /// # Examples
     ///
     /// ```
@@ -939,9 +991,9 @@ impl<T: Clone> Receiver<T> {
     /// drop(s);
     ///
     /// assert_eq!(r1.recv().await, Ok(1));
-    /// assert_eq!(r1.recv().await, Err(RecvError));
+    /// assert_eq!(r1.recv().await, Err(RecvError::Closed));
     /// assert_eq!(r2.recv().await, Ok(1));
-    /// assert_eq!(r2.recv().await, Err(RecvError));
+    /// assert_eq!(r2.recv().await, Err(RecvError::Closed));
     /// # });
     /// ```
     pub fn recv(&mut self) -> Recv<'_, T> {
@@ -954,6 +1006,10 @@ impl<T: Clone> Receiver<T> {
     /// Attempts to receive a message from the channel.
     ///
     /// If the channel is empty or closed, this method returns an error.
+    ///
+    /// If this receiver has missed a message (only possible if overflow mode is enabled), then
+    /// this method returns an error and readjusts its cursor to point to the first available
+    /// message.
     ///
     /// # Examples
     ///
@@ -981,55 +1037,9 @@ impl<T: Clone> Receiver<T> {
             Err(_) => return Err(TryRecvError::Closed),
         };
 
-        if inner.send_count < self.last_send_count {
-            // This means channel shrank so we need to adjust the `self.recv_count`.
-            self.recv_count = self
-                .recv_count
-                .saturating_sub(self.last_send_count - inner.send_count);
-        }
-        self.last_send_count = inner.send_count;
-
-        assert!(inner.replaced_count >= self.last_replaced_count);
-        self.recv_count = self
-            .recv_count
-            .saturating_sub(inner.replaced_count - self.last_replaced_count);
-        self.last_replaced_count = inner.replaced_count;
-
-        let msg_count = inner.send_count - self.recv_count;
-        if msg_count == 0 || inner.queue.is_empty() {
-            if inner.is_closed {
-                return Err(TryRecvError::Closed);
-            } else {
-                return Err(TryRecvError::Empty);
-            }
-        }
-        let msg_index = inner.queue.len().saturating_sub(msg_count);
-        // If we read from the front of the queue and this is the last receiver reading it
-        // we can pop the queue instead of cloning the message
-        let msg = if msg_index == 0 && inner.queue[msg_index].1 == 1 {
-            let msg = inner.queue.pop_front().unwrap().0;
-            if !inner.overflow {
-                // Notify 1 awaiting senders that there is now room. If there is still room in the
-                // queue, the notified operation will notify another awaiting sender.
-                inner.send_ops.notify(1);
-            };
-            msg
-        } else {
-            let msg = inner.queue[msg_index].0.clone();
-            inner.queue[msg_index].1 -= 1;
-            if inner.queue[msg_index].1 == 0 {
-                inner.queue.pop_front();
-
-                if !inner.overflow {
-                    // Notify 1 awaiting senders that there is now room. If there is still room in the
-                    // queue, the notified operation will notify another awaiting sender.
-                    inner.send_ops.notify(1);
-                }
-            };
-            msg
-        };
-        self.recv_count += 1;
-        Ok(msg)
+        inner
+            .try_recv_at(&mut self.pos)
+            .map(|cow| cow.unwrap_or_else(T::clone))
     }
 }
 
@@ -1040,40 +1050,16 @@ impl<T> Drop for Receiver<T> {
             Err(_) => return,
         };
 
-        if inner.send_count < self.last_send_count {
-            // This means channel shrank so we need to adjust the `self.recv_count`.
-            self.recv_count = self
-                .recv_count
-                .saturating_sub(self.last_send_count - inner.send_count);
-        }
-        self.last_send_count = inner.send_count;
-
-        assert!(inner.replaced_count >= self.last_replaced_count);
-        self.recv_count = self
-            .recv_count
-            .saturating_sub(inner.replaced_count - self.last_replaced_count);
-        self.last_replaced_count = inner.replaced_count;
-
-        let msg_count = inner.send_count - self.recv_count;
-        let len = inner.queue.len();
-        let msg_index = len.saturating_sub(msg_count);
-
-        for i in msg_index..len {
-            inner.queue[i].1 -= 1;
-        }
-        let mut poped = false;
-        while let Some((_, 0)) = inner.queue.front() {
-            inner.queue.pop_front();
-            if !poped {
-                poped = true;
+        // Remove ourself from each item's counter
+        loop {
+            match inner.try_recv_at(&mut self.pos) {
+                Ok(_) => continue,
+                Err(TryRecvError::Overflowed(_)) => continue,
+                Err(TryRecvError::Closed) => break,
+                Err(TryRecvError::Empty) => break,
             }
         }
 
-        if poped && !inner.overflow {
-            // Notify 1 awaiting senders that there is now room. If there is still room in the
-            // queue, the notified operation will notify another awaiting sender.
-            inner.send_ops.notify(1);
-        }
         inner.receiver_count -= 1;
 
         inner.close_channel();
@@ -1086,9 +1072,7 @@ impl<T> Clone for Receiver<T> {
         inner.receiver_count += 1;
         Receiver {
             inner: self.inner.clone(),
-            recv_count: inner.send_count,
-            last_send_count: inner.send_count,
-            last_replaced_count: inner.replaced_count,
+            pos: inner.head_pos + inner.queue.len() as u64,
             listener: None,
         }
     }
@@ -1118,6 +1102,7 @@ impl<T: Clone> Stream for Receiver<T> {
                         self.listener = None;
                         return Poll::Ready(None);
                     }
+                    Err(TryRecvError::Overflowed(_)) => continue,
                     Err(TryRecvError::Empty) => {}
                 }
 
@@ -1250,22 +1235,36 @@ impl<T> fmt::Display for TrySendError<T> {
 }
 
 /// An error returned from [`Receiver::recv()`].
-///
-/// Received because the channel is empty and closed.
 #[derive(PartialEq, Eq, Clone, Copy, Debug)]
-pub struct RecvError;
+pub enum RecvError {
+    /// The channel has overflowed since the last element was seen.  Future recv operations will
+    /// succeed, but some messages have been skipped.
+    ///
+    /// Contains the number of messages missed.
+    Overflowed(u64),
+
+    /// The channel is empty and closed.
+    Closed,
+}
 
 impl error::Error for RecvError {}
 
 impl fmt::Display for RecvError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "receiving from an empty and closed channel")
+        match self {
+            Self::Overflowed(n) => write!(f, "receiving skipped {} messages", n),
+            Self::Closed => write!(f, "receiving from an empty and closed channel"),
+        }
     }
 }
 
 /// An error returned from [`Receiver::try_recv()`].
 #[derive(PartialEq, Eq, Clone, Copy, Debug)]
 pub enum TryRecvError {
+    /// The channel has overflowed since the last element was seen.  Future recv operations will
+    /// succeed, but some messages have been skipped.
+    Overflowed(u64),
+
     /// The channel is empty but not closed.
     Empty,
 
@@ -1279,6 +1278,7 @@ impl TryRecvError {
         match self {
             TryRecvError::Empty => true,
             TryRecvError::Closed => false,
+            TryRecvError::Overflowed(_) => false,
         }
     }
 
@@ -1287,6 +1287,16 @@ impl TryRecvError {
         match self {
             TryRecvError::Empty => false,
             TryRecvError::Closed => true,
+            TryRecvError::Overflowed(_) => false,
+        }
+    }
+
+    /// Returns `true` if this error indicates the receiver missed messages.
+    pub fn is_overflowed(&self) -> bool {
+        match self {
+            TryRecvError::Empty => false,
+            TryRecvError::Closed => false,
+            TryRecvError::Overflowed(_) => true,
         }
     }
 }
@@ -1298,6 +1308,9 @@ impl fmt::Display for TryRecvError {
         match *self {
             TryRecvError::Empty => write!(f, "receiving from an empty channel"),
             TryRecvError::Closed => write!(f, "receiving from an empty and closed channel"),
+            TryRecvError::Overflowed(n) => {
+                write!(f, "receiving operation observed {} lost messages", n)
+            }
         }
     }
 }
@@ -1375,7 +1388,10 @@ impl<'a, T: Clone> Future for Recv<'a, T> {
             // Attempt to receive a message.
             match this.receiver.try_recv() {
                 Ok(msg) => return Poll::Ready(Ok(msg)),
-                Err(TryRecvError::Closed) => return Poll::Ready(Err(RecvError)),
+                Err(TryRecvError::Closed) => return Poll::Ready(Err(RecvError::Closed)),
+                Err(TryRecvError::Overflowed(n)) => {
+                    return Poll::Ready(Err(RecvError::Overflowed(n)))
+                }
                 Err(TryRecvError::Empty) => {}
             }
 
@@ -1386,7 +1402,7 @@ impl<'a, T: Clone> Future for Recv<'a, T> {
                     this.listener = {
                         let inner = match this.receiver.inner.lock() {
                             Ok(i) => i,
-                            Err(_) => return Poll::Ready(Err(RecvError)),
+                            Err(_) => return Poll::Ready(Err(RecvError::Closed)),
                         };
 
                         Some(inner.recv_ops.listen())
@@ -1460,9 +1476,7 @@ impl<T> InactiveReceiver<T> {
 
         Receiver {
             inner: self.inner.clone(),
-            recv_count: inner.send_count,
-            last_send_count: inner.send_count,
-            last_replaced_count: inner.replaced_count,
+            pos: inner.head_pos + inner.queue.len() as u64,
             listener: None,
         }
     }

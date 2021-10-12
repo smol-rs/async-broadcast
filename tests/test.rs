@@ -135,8 +135,8 @@ fn parallel_async() {
                 assert_eq!(r1.recv().await.unwrap(), 10);
                 assert_eq!(r2.recv().await.unwrap(), 10);
 
-                assert_eq!(r1.recv().await, Err(RecvError));
-                assert_eq!(r2.recv().await, Err(RecvError));
+                assert_eq!(r1.recv().await, Err(RecvError::Closed));
+                assert_eq!(r2.recv().await, Err(RecvError::Closed));
             })
         })
         .run();
@@ -168,6 +168,7 @@ fn channel_shrink() {
 
     r1.set_capacity(2);
 
+    assert_eq!(r1.try_recv(), Err(TryRecvError::Overflowed(2)));
     assert_eq!(r1.try_recv().unwrap(), 3);
     assert_eq!(r1.try_recv().unwrap(), 4);
     assert_eq!(r1.try_recv(), Err(TryRecvError::Empty));
@@ -223,6 +224,7 @@ fn overflow() {
         })
         .run();
 
+    assert_eq!(r1.try_recv(), Err(TryRecvError::Overflowed(1)));
     assert_eq!(r1.try_recv().unwrap(), 8);
     assert_eq!(r1.try_recv().unwrap(), 9);
 }
