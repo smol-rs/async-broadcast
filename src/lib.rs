@@ -101,7 +101,7 @@ mod doctests {
 }
 
 use std::collections::VecDeque;
-use std::convert::TryInto;
+use std::convert::{Infallible, TryInto};
 use std::error;
 use std::fmt;
 use std::future::Future;
@@ -2223,5 +2223,23 @@ impl<T: Deref> AdjustableCapacityLimiter<T> for SimpleMemoryCapacityLimiter {
                 Ok(())
             }
         }
+    }
+}
+
+/// A [`CapacityLimiter`] that never rejects an element.
+///
+/// This may be used to produce an unbounded channel.
+#[derive(Debug, Copy, Clone)]
+pub struct UnlimitedCapacityLimiter;
+
+impl<T: ?Sized> CapacityLimiter<T> for UnlimitedCapacityLimiter {
+    type Error = Infallible;
+
+    fn try_add<'a, I>(&mut self, _: &T, _: I) -> Result<(), Infallible>
+    where
+        T: 'a,
+        I: ExactSizeIterator<Item = &'a T>,
+    {
+        Ok(())
     }
 }
