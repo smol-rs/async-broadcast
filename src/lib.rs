@@ -1067,12 +1067,38 @@ impl<T> Drop for Receiver<T> {
 }
 
 impl<T> Clone for Receiver<T> {
+    /// Produce a clone of this Receiver that has the same messages queued.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # futures_lite::future::block_on(async {
+    /// use async_broadcast::{broadcast, RecvError};
+    ///
+    /// let (s, mut r1) = broadcast(1);
+    ///
+    /// assert_eq!(s.broadcast(1).await, Ok(None));
+    /// drop(s);
+    ///
+    /// let mut r2 = r1.clone();
+    ///
+    /// assert_eq!(r1.recv().await, Ok(1));
+    /// assert_eq!(r1.recv().await, Err(RecvError::Closed));
+    /// assert_eq!(r2.recv().await, Ok(1));
+    /// assert_eq!(r2.recv().await, Err(RecvError::Closed));
+    /// # });
+    /// ```
     fn clone(&self) -> Self {
         let mut inner = self.inner.lock().unwrap();
         inner.receiver_count += 1;
+        // increment the waiter count on all items not yet received by this object
+        let n = self.pos.saturating_sub(inner.head_pos) as usize;
+        for (_elt, waiters) in inner.queue.iter_mut().skip(n) {
+            *waiters += 1;
+        }
         Receiver {
             inner: self.inner.clone(),
-            pos: inner.head_pos + inner.queue.len() as u64,
+            pos: self.pos,
             listener: None,
         }
     }
