@@ -1041,6 +1041,44 @@ impl<T: Clone> Receiver<T> {
             .try_recv_at(&mut self.pos)
             .map(|cow| cow.unwrap_or_else(T::clone))
     }
+
+    /// Produce a new Receiver for this channel.
+    ///
+    /// Unlike [`Receiver::clone`], this method creates a new receiver that starts with zero
+    /// messages available.  This is slightly faster than a real clone.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # futures_lite::future::block_on(async {
+    /// use async_broadcast::{broadcast, RecvError};
+    ///
+    /// let (s, mut r1) = broadcast(2);
+    ///
+    /// assert_eq!(s.broadcast(1).await, Ok(None));
+    ///
+    /// let mut r2 = r1.new_receiver();
+    ///
+    /// assert_eq!(s.broadcast(2).await, Ok(None));
+    /// drop(s);
+    ///
+    /// assert_eq!(r1.recv().await, Ok(1));
+    /// assert_eq!(r1.recv().await, Ok(2));
+    /// assert_eq!(r1.recv().await, Err(RecvError::Closed));
+    ///
+    /// assert_eq!(r2.recv().await, Ok(2));
+    /// assert_eq!(r2.recv().await, Err(RecvError::Closed));
+    /// # });
+    /// ```
+    pub fn new_receiver(&self) -> Self {
+        let mut inner = self.inner.lock().unwrap();
+        inner.receiver_count += 1;
+        Receiver {
+            inner: self.inner.clone(),
+            pos: inner.head_pos + inner.queue.len() as u64,
+            listener: None,
+        }
+    }
 }
 
 impl<T> Drop for Receiver<T> {
