@@ -25,6 +25,7 @@ name = "broadcast_bench"
 event-listener = "2.5.1"
 futures-core = "0.3.14"
 easy-parallel = "3.1.0"
+parking_lot = "0.11.2"
 
 [dev-dependencies]
 criterion = "0.3"

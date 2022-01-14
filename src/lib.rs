@@ -106,11 +106,12 @@ use std::error;
 use std::fmt;
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::task::{Context, Poll};
 
 use event_listener::{Event, EventListener};
 use futures_core::{ready, stream::Stream};
+use parking_lot::RwLock;
 
 /// Create a new broadcast channel.
 ///
@@ -141,7 +142,7 @@ use futures_core::{ready, stream::Stream};
 pub fn broadcast<T>(cap: usize) -> (Sender<T>, Receiver<T>) {
     assert!(cap > 0, "capacity cannot be zero");
 
-    let inner = Arc::new(Mutex::new(Inner {
+    let inner = Arc::new(RwLock::new(Inner {
         queue: VecDeque::with_capacity(cap),
         capacity: cap,
         overflow: false,
@@ -291,7 +292,7 @@ impl<T> Inner<T> {
 /// The channel can also be closed manually by calling [`Sender::close()`].
 #[derive(Debug)]
 pub struct Sender<T> {
-    inner: Arc<Mutex<Inner<T>>>,
+    inner: Arc<RwLock<Inner<T>>>,
 }
 
 impl<T> Sender<T> {
@@ -306,7 +307,7 @@ impl<T> Sender<T> {
     /// assert_eq!(s.capacity(), 5);
     /// ```
     pub fn capacity(&self) -> usize {
-        self.inner.lock().unwrap().capacity
+        self.inner.read().capacity
     }
 
     /// Set the channel capacity.
@@ -340,7 +341,7 @@ impl<T> Sender<T> {
     /// assert_eq!(s.try_broadcast(2), Err(TrySendError::Full(2)));
     /// ```
     pub fn set_capacity(&mut self, new_cap: usize) {
-        self.inner.lock().unwrap().set_capacity(new_cap);
+        self.inner.write().set_capacity(new_cap);
     }
 
     /// If overflow mode is enabled on this channel.
@@ -354,7 +355,7 @@ impl<T> Sender<T> {
     /// assert!(!s.overflow());
     /// ```
     pub fn overflow(&self) -> bool {
-        self.inner.lock().unwrap().overflow
+        self.inner.read().overflow
     }
 
     /// Set overflow mode on the channel.
@@ -381,7 +382,7 @@ impl<T> Sender<T> {
     /// assert_eq!(r.try_recv(), Err(TryRecvError::Empty));
     /// ```
     pub fn set_overflow(&mut self, overflow: bool) {
-        self.inner.lock().unwrap().overflow = overflow;
+        self.inner.write().overflow = overflow;
     }
 
     /// Closes the channel.
@@ -405,7 +406,7 @@ impl<T> Sender<T> {
     /// # });
     /// ```
     pub fn close(&self) -> bool {
-        self.inner.lock().unwrap().close()
+        self.inner.write().close()
     }
 
     /// Returns `true` if the channel is closed.
@@ -424,7 +425,7 @@ impl<T> Sender<T> {
     /// # });
     /// ```
     pub fn is_closed(&self) -> bool {
-        self.inner.lock().unwrap().is_closed
+        self.inner.read().is_closed
     }
 
     /// Returns `true` if the channel is empty.
@@ -443,7 +444,7 @@ impl<T> Sender<T> {
     /// # });
     /// ```
     pub fn is_empty(&self) -> bool {
-        self.inner.lock().unwrap().queue.is_empty()
+        self.inner.read().queue.is_empty()
     }
 
     /// Returns `true` if the channel is full.
@@ -462,7 +463,7 @@ impl<T> Sender<T> {
     /// # });
     /// ```
     pub fn is_full(&self) -> bool {
-        let inner = self.inner.lock().unwrap();
+        let inner = self.inner.read();
 
         inner.queue.len() == inner.capacity
     }
@@ -484,7 +485,7 @@ impl<T> Sender<T> {
     /// # });
     /// ```
     pub fn len(&self) -> usize {
-        self.inner.lock().unwrap().queue.len()
+        self.inner.read().queue.len()
     }
 
     /// Returns the number of receivers for the channel.
@@ -507,7 +508,7 @@ impl<T> Sender<T> {
     /// assert_eq!(r.inactive_receiver_count(), 1);
     /// ```
     pub fn receiver_count(&self) -> usize {
-        self.inner.lock().unwrap().receiver_count
+        self.inner.read().receiver_count
     }
 
     /// Returns the number of inactive receivers for the channel.
@@ -527,7 +528,7 @@ impl<T> Sender<T> {
     /// assert_eq!(r.inactive_receiver_count(), 1);
     /// ```
     pub fn inactive_receiver_count(&self) -> usize {
-        self.inner.lock().unwrap().inactive_receiver_count
+        self.inner.read().inactive_receiver_count
     }
 
     /// Returns the number of senders for the channel.
@@ -546,7 +547,7 @@ impl<T> Sender<T> {
     /// # });
     /// ```
     pub fn sender_count(&self) -> usize {
-        self.inner.lock().unwrap().sender_count
+        self.inner.read().sender_count
     }
 }
 
@@ -605,10 +606,8 @@ impl<T: Clone> Sender<T> {
     /// ```
     pub fn try_broadcast(&self, msg: T) -> Result<Option<T>, TrySendError<T>> {
         let mut ret = None;
-        let mut inner = match self.inner.lock() {
-            Ok(i) => i,
-            Err(_) => return Err(TrySendError::Closed(msg)),
-        };
+        let mut inner = self.inner.write();
+
         if inner.is_closed {
             return Err(TrySendError::Closed(msg));
         } else if inner.receiver_count == 0 {
@@ -638,10 +637,8 @@ impl<T: Clone> Sender<T> {
 
 impl<T> Drop for Sender<T> {
     fn drop(&mut self) {
-        let mut inner = match self.inner.lock() {
-            Ok(i) => i,
-            Err(_) => return,
-        };
+        let mut inner = self.inner.write();
+
         inner.sender_count -= 1;
 
         if inner.sender_count == 0 {
@@ -652,7 +649,7 @@ impl<T> Drop for Sender<T> {
 
 impl<T> Clone for Sender<T> {
     fn clone(&self) -> Self {
-        self.inner.lock().unwrap().sender_count += 1;
+        self.inner.write().sender_count += 1;
 
         Sender {
             inner: self.inner.clone(),
@@ -668,7 +665,7 @@ impl<T> Clone for Sender<T> {
 /// receivers around.
 #[derive(Debug)]
 pub struct Receiver<T> {
-    inner: Arc<Mutex<Inner<T>>>,
+    inner: Arc<RwLock<Inner<T>>>,
     pos: u64,
 
     /// Listens for a send or close event to unblock this stream.
@@ -687,7 +684,7 @@ impl<T> Receiver<T> {
     /// assert_eq!(r.capacity(), 5);
     /// ```
     pub fn capacity(&self) -> usize {
-        self.inner.lock().unwrap().capacity
+        self.inner.read().capacity
     }
 
     /// Set the channel capacity.
@@ -721,7 +718,7 @@ impl<T> Receiver<T> {
     /// assert_eq!(s.try_broadcast(2), Err(TrySendError::Full(2)));
     /// ```
     pub fn set_capacity(&mut self, new_cap: usize) {
-        self.inner.lock().unwrap().set_capacity(new_cap);
+        self.inner.write().set_capacity(new_cap);
     }
 
     /// If overflow mode is enabled on this channel.
@@ -735,7 +732,7 @@ impl<T> Receiver<T> {
     /// assert!(!r.overflow());
     /// ```
     pub fn overflow(&self) -> bool {
-        self.inner.lock().unwrap().overflow
+        self.inner.read().overflow
     }
 
     /// Set overflow mode on the channel.
@@ -762,7 +759,7 @@ impl<T> Receiver<T> {
     /// assert_eq!(r.try_recv(), Err(TryRecvError::Empty));
     /// ```
     pub fn set_overflow(&mut self, overflow: bool) {
-        self.inner.lock().unwrap().overflow = overflow;
+        self.inner.write().overflow = overflow;
     }
 
     /// Closes the channel.
@@ -786,7 +783,7 @@ impl<T> Receiver<T> {
     /// # });
     /// ```
     pub fn close(&self) -> bool {
-        self.inner.lock().unwrap().close()
+        self.inner.write().close()
     }
 
     /// Returns `true` if the channel is closed.
@@ -805,7 +802,7 @@ impl<T> Receiver<T> {
     /// # });
     /// ```
     pub fn is_closed(&self) -> bool {
-        self.inner.lock().unwrap().is_closed
+        self.inner.read().is_closed
     }
 
     /// Returns `true` if the channel is empty.
@@ -824,7 +821,7 @@ impl<T> Receiver<T> {
     /// # });
     /// ```
     pub fn is_empty(&self) -> bool {
-        self.inner.lock().unwrap().queue.is_empty()
+        self.inner.read().queue.is_empty()
     }
 
     /// Returns `true` if the channel is full.
@@ -843,7 +840,7 @@ impl<T> Receiver<T> {
     /// # });
     /// ```
     pub fn is_full(&self) -> bool {
-        let inner = self.inner.lock().unwrap();
+        let inner = self.inner.read();
 
         inner.queue.len() == inner.capacity
     }
@@ -865,7 +862,7 @@ impl<T> Receiver<T> {
     /// # });
     /// ```
     pub fn len(&self) -> usize {
-        self.inner.lock().unwrap().queue.len()
+        self.inner.read().queue.len()
     }
 
     /// Returns the number of receivers for the channel.
@@ -888,7 +885,7 @@ impl<T> Receiver<T> {
     /// assert_eq!(r.inactive_receiver_count(), 1);
     /// ```
     pub fn receiver_count(&self) -> usize {
-        self.inner.lock().unwrap().receiver_count
+        self.inner.read().receiver_count
     }
 
     /// Returns the number of inactive receivers for the channel.
@@ -908,7 +905,7 @@ impl<T> Receiver<T> {
     /// assert_eq!(r.inactive_receiver_count(), 1);
     /// ```
     pub fn inactive_receiver_count(&self) -> usize {
-        self.inner.lock().unwrap().inactive_receiver_count
+        self.inner.read().inactive_receiver_count
     }
 
     /// Returns the number of senders for the channel.
@@ -927,7 +924,7 @@ impl<T> Receiver<T> {
     /// # });
     /// ```
     pub fn sender_count(&self) -> usize {
-        self.inner.lock().unwrap().sender_count
+        self.inner.read().sender_count
     }
 
     /// Downgrade to a [`InactiveReceiver`].
@@ -958,7 +955,7 @@ impl<T> Receiver<T> {
     /// ```
     pub fn deactivate(self) -> InactiveReceiver<T> {
         // Drop::drop impl of Receiver will take care of `receiver_count`.
-        self.inner.lock().unwrap().inactive_receiver_count += 1;
+        self.inner.write().inactive_receiver_count += 1;
 
         InactiveReceiver {
             inner: self.inner.clone(),
@@ -1032,12 +1029,7 @@ impl<T: Clone> Receiver<T> {
     /// # });
     /// ```
     pub fn try_recv(&mut self) -> Result<T, TryRecvError> {
-        let mut inner = match self.inner.lock() {
-            Ok(i) => i,
-            Err(_) => return Err(TryRecvError::Closed),
-        };
-
-        inner
+        self.inner.write()
             .try_recv_at(&mut self.pos)
             .map(|cow| cow.unwrap_or_else(T::clone))
     }
@@ -1045,10 +1037,7 @@ impl<T: Clone> Receiver<T> {
 
 impl<T> Drop for Receiver<T> {
     fn drop(&mut self) {
-        let mut inner = match self.inner.lock() {
-            Ok(i) => i,
-            Err(_) => return,
-        };
+        let mut inner = self.inner.write();
 
         // Remove ourself from each item's counter
         loop {
@@ -1068,7 +1057,7 @@ impl<T> Drop for Receiver<T> {
 
 impl<T> Clone for Receiver<T> {
     fn clone(&self) -> Self {
-        let mut inner = self.inner.lock().unwrap();
+        let mut inner = self.inner.write();
         inner.receiver_count += 1;
         Receiver {
             inner: self.inner.clone(),
@@ -1111,11 +1100,7 @@ impl<T: Clone> Stream for Receiver<T> {
                     None => {
                         // Start listening and then try receiving again.
                         self.listener = {
-                            let inner = match self.inner.lock() {
-                                Ok(i) => i,
-                                Err(_) => return Poll::Ready(None),
-                            };
-
+                            let inner = self.inner.write();
                             Some(inner.recv_ops.listen())
                         };
                     }
@@ -1131,7 +1116,7 @@ impl<T: Clone> Stream for Receiver<T> {
 
 impl<T: Clone> futures_core::stream::FusedStream for Receiver<T> {
     fn is_terminated(&self) -> bool {
-        let inner = self.inner.lock().unwrap();
+        let inner = self.inner.read();
 
         inner.is_closed && inner.queue.is_empty()
     }
@@ -1338,7 +1323,7 @@ impl<'a, T: Clone> Future for Send<'a, T> {
             // Attempt to send a message.
             match this.sender.try_broadcast(msg) {
                 Ok(msg) => {
-                    let inner = this.sender.inner.lock().unwrap();
+                    let inner = this.sender.inner.write();
 
                     if inner.queue.len() < inner.capacity {
                         // Not full still, so notify the next awaiting sender.
@@ -1355,7 +1340,7 @@ impl<'a, T: Clone> Future for Send<'a, T> {
             match &mut this.listener {
                 None => {
                     // Start listening and then try sending again.
-                    let inner = this.sender.inner.lock().unwrap();
+                    let inner = this.sender.inner.write();
                     this.listener = Some(inner.send_ops.listen());
                 }
                 Some(l) => {
@@ -1400,11 +1385,7 @@ impl<'a, T: Clone> Future for Recv<'a, T> {
                 None => {
                     // Start listening and then try receiving again.
                     this.listener = {
-                        let inner = match this.receiver.inner.lock() {
-                            Ok(i) => i,
-                            Err(_) => return Poll::Ready(Err(RecvError::Closed)),
-                        };
-
+                        let inner = this.receiver.inner.write();
                         Some(inner.recv_ops.listen())
                     };
                 }
@@ -1424,7 +1405,7 @@ impl<'a, T: Clone> Future for Recv<'a, T> {
 /// keeping a channel open even when no associated active receivers exist.
 #[derive(Debug)]
 pub struct InactiveReceiver<T> {
-    inner: Arc<Mutex<Inner<T>>>,
+    inner: Arc<RwLock<Inner<T>>>,
 }
 
 impl<T> InactiveReceiver<T> {
@@ -1465,7 +1446,7 @@ impl<T> InactiveReceiver<T> {
     /// assert_eq!(r.try_recv(), Ok(10));
     /// ```
     pub fn activate_cloned(&self) -> Receiver<T> {
-        let mut inner = self.inner.lock().unwrap();
+        let mut inner = self.inner.write();
         inner.receiver_count += 1;
 
         if inner.receiver_count == 1 {
@@ -1485,7 +1466,7 @@ impl<T> InactiveReceiver<T> {
     ///
     /// See [`Receiver::capacity`] documentation for examples.
     pub fn capacity(&self) -> usize {
-        self.inner.lock().unwrap().capacity
+        self.inner.read().capacity
     }
 
     /// Set the channel capacity.
@@ -1496,14 +1477,14 @@ impl<T> InactiveReceiver<T> {
     ///
     /// See [`Receiver::set_capacity`] documentation for examples.
     pub fn set_capacity(&mut self, new_cap: usize) {
-        self.inner.lock().unwrap().set_capacity(new_cap);
+        self.inner.write().set_capacity(new_cap);
     }
 
     /// If overflow mode is enabled on this channel.
     ///
     /// See [`Receiver::overflow`] documentation for examples.
     pub fn overflow(&self) -> bool {
-        self.inner.lock().unwrap().overflow
+        self.inner.read().overflow
     }
 
     /// Set overflow mode on the channel.
@@ -1513,7 +1494,7 @@ impl<T> InactiveReceiver<T> {
     ///
     /// See [`Receiver::set_overflow`] documentation for examples.
     pub fn set_overflow(&mut self, overflow: bool) {
-        self.inner.lock().unwrap().overflow = overflow;
+        self.inner.write().overflow = overflow;
     }
 
     /// Closes the channel.
@@ -1524,28 +1505,28 @@ impl<T> InactiveReceiver<T> {
     ///
     /// See [`Receiver::close`] documentation for examples.
     pub fn close(&self) -> bool {
-        self.inner.lock().unwrap().close()
+        self.inner.write().close()
     }
 
     /// Returns `true` if the channel is closed.
     ///
     /// See [`Receiver::is_closed`] documentation for examples.
     pub fn is_closed(&self) -> bool {
-        self.inner.lock().unwrap().is_closed
+        self.inner.read().is_closed
     }
 
     /// Returns `true` if the channel is empty.
     ///
     /// See [`Receiver::is_empty`] documentation for examples.
     pub fn is_empty(&self) -> bool {
-        self.inner.lock().unwrap().queue.is_empty()
+        self.inner.read().queue.is_empty()
     }
 
     /// Returns `true` if the channel is full.
     ///
     /// See [`Receiver::is_full`] documentation for examples.
     pub fn is_full(&self) -> bool {
-        let inner = self.inner.lock().unwrap();
+        let inner = self.inner.read();
 
         inner.queue.len() == inner.capacity
     }
@@ -1554,7 +1535,7 @@ impl<T> InactiveReceiver<T> {
     ///
     /// See [`Receiver::len`] documentation for examples.
     pub fn len(&self) -> usize {
-        self.inner.lock().unwrap().queue.len()
+        self.inner.read().queue.len()
     }
 
     /// Returns the number of receivers for the channel.
@@ -1577,7 +1558,7 @@ impl<T> InactiveReceiver<T> {
     /// assert_eq!(r.inactive_receiver_count(), 1);
     /// ```
     pub fn receiver_count(&self) -> usize {
-        self.inner.lock().unwrap().receiver_count
+        self.inner.read().receiver_count
     }
 
     /// Returns the number of inactive receivers for the channel.
@@ -1597,22 +1578,20 @@ impl<T> InactiveReceiver<T> {
     /// assert_eq!(r.inactive_receiver_count(), 1);
     /// ```
     pub fn inactive_receiver_count(&self) -> usize {
-        self.inner.lock().unwrap().inactive_receiver_count
+        self.inner.read().inactive_receiver_count
     }
 
     /// Returns the number of senders for the channel.
     ///
     /// See [`Receiver::sender_count`] documentation for examples.
     pub fn sender_count(&self) -> usize {
-        self.inner.lock().unwrap().sender_count
+        self.inner.read().sender_count
     }
 }
 
 impl<T> Clone for InactiveReceiver<T> {
     fn clone(&self) -> Self {
-        if let Ok(mut inner) = self.inner.lock() {
-            inner.inactive_receiver_count += 1;
-        }
+        self.inner.write().inactive_receiver_count += 1;
 
         InactiveReceiver {
             inner: self.inner.clone(),
@@ -1622,10 +1601,9 @@ impl<T> Clone for InactiveReceiver<T> {
 
 impl<T> Drop for InactiveReceiver<T> {
     fn drop(&mut self) {
-        if let Ok(mut inner) = self.inner.lock() {
-            inner.inactive_receiver_count -= 1;
+        let mut inner = self.inner.write();
 
-            inner.close_channel();
-        }
+        inner.inactive_receiver_count -= 1;
+        inner.close_channel();
     }
 }
