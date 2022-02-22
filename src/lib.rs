@@ -549,6 +549,44 @@ impl<T> Sender<T> {
     pub fn sender_count(&self) -> usize {
         self.inner.read().sender_count
     }
+
+    /// Produce a new Receiver for this channel.
+    ///
+    /// The new receiver starts with zero messages available.  This will not re-open the channel if
+    /// it was closed due to all receivers being dropped.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # futures_lite::future::block_on(async {
+    /// use async_broadcast::{broadcast, RecvError};
+    ///
+    /// let (s, mut r1) = broadcast(2);
+    ///
+    /// assert_eq!(s.broadcast(1).await, Ok(None));
+    ///
+    /// let mut r2 = s.new_receiver();
+    ///
+    /// assert_eq!(s.broadcast(2).await, Ok(None));
+    /// drop(s);
+    ///
+    /// assert_eq!(r1.recv().await, Ok(1));
+    /// assert_eq!(r1.recv().await, Ok(2));
+    /// assert_eq!(r1.recv().await, Err(RecvError::Closed));
+    ///
+    /// assert_eq!(r2.recv().await, Ok(2));
+    /// assert_eq!(r2.recv().await, Err(RecvError::Closed));
+    /// # });
+    /// ```
+    pub fn new_receiver(&self) -> Receiver<T> {
+        let mut inner = self.inner.lock().unwrap();
+        inner.receiver_count += 1;
+        Receiver {
+            inner: self.inner.clone(),
+            pos: inner.head_pos + inner.queue.len() as u64,
+            listener: None,
+        }
+    }
 }
 
 impl<T: Clone> Sender<T> {
@@ -1033,6 +1071,77 @@ impl<T: Clone> Receiver<T> {
             .try_recv_at(&mut self.pos)
             .map(|cow| cow.unwrap_or_else(T::clone))
     }
+
+    /// Produce a new Sender for this channel.
+    ///
+    /// This will not re-open the channel if it was closed due to all senders being dropped.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # futures_lite::future::block_on(async {
+    /// use async_broadcast::{broadcast, RecvError};
+    ///
+    /// let (s1, mut r) = broadcast(2);
+    ///
+    /// assert_eq!(s1.broadcast(1).await, Ok(None));
+    ///
+    /// let mut s2 = r.new_sender();
+    ///
+    /// assert_eq!(s2.broadcast(2).await, Ok(None));
+    /// drop(s1);
+    /// drop(s2);
+    ///
+    /// assert_eq!(r.recv().await, Ok(1));
+    /// assert_eq!(r.recv().await, Ok(2));
+    /// assert_eq!(r.recv().await, Err(RecvError::Closed));
+    /// # });
+    /// ```
+    pub fn new_sender(&self) -> Sender<T> {
+        self.inner.lock().unwrap().sender_count += 1;
+
+        Sender {
+            inner: self.inner.clone(),
+        }
+    }
+
+    /// Produce a new Receiver for this channel.
+    ///
+    /// Unlike [`Receiver::clone`], this method creates a new receiver that starts with zero
+    /// messages available.  This is slightly faster than a real clone.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # futures_lite::future::block_on(async {
+    /// use async_broadcast::{broadcast, RecvError};
+    ///
+    /// let (s, mut r1) = broadcast(2);
+    ///
+    /// assert_eq!(s.broadcast(1).await, Ok(None));
+    ///
+    /// let mut r2 = r1.new_receiver();
+    ///
+    /// assert_eq!(s.broadcast(2).await, Ok(None));
+    /// drop(s);
+    ///
+    /// assert_eq!(r1.recv().await, Ok(1));
+    /// assert_eq!(r1.recv().await, Ok(2));
+    /// assert_eq!(r1.recv().await, Err(RecvError::Closed));
+    ///
+    /// assert_eq!(r2.recv().await, Ok(2));
+    /// assert_eq!(r2.recv().await, Err(RecvError::Closed));
+    /// # });
+    /// ```
+    pub fn new_receiver(&self) -> Self {
+        let mut inner = self.inner.lock().unwrap();
+        inner.receiver_count += 1;
+        Receiver {
+            inner: self.inner.clone(),
+            pos: inner.head_pos + inner.queue.len() as u64,
+            listener: None,
+        }
+    }
 }
 
 impl<T> Drop for Receiver<T> {
@@ -1056,12 +1165,38 @@ impl<T> Drop for Receiver<T> {
 }
 
 impl<T> Clone for Receiver<T> {
+    /// Produce a clone of this Receiver that has the same messages queued.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # futures_lite::future::block_on(async {
+    /// use async_broadcast::{broadcast, RecvError};
+    ///
+    /// let (s, mut r1) = broadcast(1);
+    ///
+    /// assert_eq!(s.broadcast(1).await, Ok(None));
+    /// drop(s);
+    ///
+    /// let mut r2 = r1.clone();
+    ///
+    /// assert_eq!(r1.recv().await, Ok(1));
+    /// assert_eq!(r1.recv().await, Err(RecvError::Closed));
+    /// assert_eq!(r2.recv().await, Ok(1));
+    /// assert_eq!(r2.recv().await, Err(RecvError::Closed));
+    /// # });
+    /// ```
     fn clone(&self) -> Self {
         let mut inner = self.inner.write();
         inner.receiver_count += 1;
+        // increment the waiter count on all items not yet received by this object
+        let n = self.pos.saturating_sub(inner.head_pos) as usize;
+        for (_elt, waiters) in inner.queue.iter_mut().skip(n) {
+            *waiters += 1;
+        }
         Receiver {
             inner: self.inner.clone(),
-            pos: inner.head_pos + inner.queue.len() as u64,
+            pos: self.pos,
             listener: None,
         }
     }
