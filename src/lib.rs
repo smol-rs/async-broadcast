@@ -579,7 +579,7 @@ impl<T> Sender<T> {
     /// # });
     /// ```
     pub fn new_receiver(&self) -> Receiver<T> {
-        let mut inner = self.inner.lock().unwrap();
+        let mut inner = self.inner.write();
         inner.receiver_count += 1;
         Receiver {
             inner: self.inner.clone(),
@@ -1067,7 +1067,8 @@ impl<T: Clone> Receiver<T> {
     /// # });
     /// ```
     pub fn try_recv(&mut self) -> Result<T, TryRecvError> {
-        self.inner.write()
+        self.inner
+            .write()
             .try_recv_at(&mut self.pos)
             .map(|cow| cow.unwrap_or_else(T::clone))
     }
@@ -1098,7 +1099,7 @@ impl<T: Clone> Receiver<T> {
     /// # });
     /// ```
     pub fn new_sender(&self) -> Sender<T> {
-        self.inner.lock().unwrap().sender_count += 1;
+        self.inner.write().sender_count += 1;
 
         Sender {
             inner: self.inner.clone(),
@@ -1134,7 +1135,7 @@ impl<T: Clone> Receiver<T> {
     /// # });
     /// ```
     pub fn new_receiver(&self) -> Self {
-        let mut inner = self.inner.lock().unwrap();
+        let mut inner = self.inner.write();
         inner.receiver_count += 1;
         Receiver {
             inner: self.inner.clone(),
