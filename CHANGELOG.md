@@ -1,3 +1,14 @@
+# Version 0.4.0
+
+- Add `RecvError::Overflowed` for detecting missing messages.
+- Avoid overflows on 32- and 16-bit systems (#22).
+- Add overflow message count.
+- `Clone` impl of `Receiver` now properly duplicates it.
+- Add `Receiver::new_receiver`.
+- Add `Receiver::new_sender` and `Sender::new_receiver`, allowing generating senders from receivers
+  and vice versa, respectively.
+- Switch to `parking_lot::RwLock` instead of `std::sync::Mutex`.
+
 # Version 0.3.4
 
 - Avoid the last clone in `try_recv` (#18).
