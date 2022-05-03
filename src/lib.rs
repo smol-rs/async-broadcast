@@ -1324,7 +1324,7 @@ impl<T> TrySendError<T> {
         }
     }
 
-    /// Returns `true` if the channel is closed.
+    /// Returns `true` if there are currently no active receivers, only inactive ones.
     pub fn is_disconnected(&self) -> bool {
         match self {
             TrySendError::Full(_) | TrySendError::Closed(_) => false,
