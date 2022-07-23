@@ -1,3 +1,10 @@
+# Version 0.4.1
+
+- Drop unneeded easy-parallel dep.
+- Bumb dependencies to the current versions.
+- Update `parking_lot` to 0.12.1.
+- fix incorrect documentation for `TrySendError::is_disconnected`.
+
 # Version 0.4.0
 
 - Add `RecvError::Overflowed` for detecting missing messages.
