@@ -24,11 +24,11 @@ name = "broadcast_bench"
 [dependencies]
 event-listener = "2.5.2"
 futures-core = "0.3.21"
-easy-parallel = "3.2.0"
 parking_lot = "0.12.1"
 
 [dev-dependencies]
 criterion = "0.3.5"
 doc-comment = "0.3.3"
+easy-parallel = "3.2.0"
 futures-lite = "1.11.3"
 futures-util = "0.3.21"
