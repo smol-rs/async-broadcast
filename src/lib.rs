@@ -146,6 +146,7 @@ pub fn broadcast<T>(cap: usize) -> (Sender<T>, Receiver<T>) {
         queue: VecDeque::with_capacity(cap),
         capacity: cap,
         overflow: false,
+        await_active: true,
         receiver_count: 1,
         inactive_receiver_count: 0,
         sender_count: 1,
@@ -179,6 +180,7 @@ struct Inner<T> {
     /// Send sequence number of the front of the queue
     head_pos: u64,
     overflow: bool,
+    await_active: bool,
 
     is_closed: bool,
 
@@ -383,6 +385,46 @@ impl<T> Sender<T> {
     /// ```
     pub fn set_overflow(&mut self, overflow: bool) {
         self.inner.write().overflow = overflow;
+    }
+
+    /// If sender will wait for active receivers.
+    ///
+    /// If set to `false`, [`Send`] will resolve immediately with a [`SendError`]. Defaults to
+    /// `true`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use async_broadcast::broadcast;
+    ///
+    /// let (s, _) = broadcast::<i32>(5);
+    /// assert!(s.await_active());
+    /// ```
+    pub fn await_active(&self) -> bool {
+        self.inner.read().await_active
+    }
+
+    /// Specify if sender will wait for active receivers.
+    ///
+    /// If set to `false`, [`Send`] will resolve immediately with a [`SendError`]. Defaults to
+    /// `true`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # futures_lite::future::block_on(async {
+    /// use async_broadcast::broadcast;
+    ///
+    /// let (mut s, mut r) = broadcast::<i32>(2);
+    /// s.broadcast(1).await.unwrap();
+    ///
+    /// let _ = r.deactivate();
+    /// s.set_await_active(false);
+    /// assert!(s.broadcast(2).await.is_err());
+    /// # });
+    /// ```
+    pub fn set_await_active(&mut self, await_active: bool) {
+        self.inner.write().await_active = await_active;
     }
 
     /// Closes the channel.
@@ -592,10 +634,13 @@ impl<T> Sender<T> {
 impl<T: Clone> Sender<T> {
     /// Broadcasts a message on the channel.
     ///
-    /// If the channel is full, this method waits until there is space for a message unless overflow
-    /// mode (set through [`Sender::set_overflow`]) is enabled. If the overflow mode is enabled it
-    /// removes the oldest message from the channel to make room for the new message. The removed
-    /// message is returned to the caller.
+    /// If the channel is full, this method waits until there is space for a message unless:
+    ///
+    /// 1. overflow mode (set through [`Sender::set_overflow`]) is enabled, in which case it removes
+    ///    the oldest message from the channel to make room for the new message. The removed message
+    ///    is returned to the caller.
+    /// 2. this behavior is disabled using [`Sender::set_await_active`], in which case, it returns
+    ///    [`SendError`] immediately.
     ///
     /// If the channel is closed, this method returns an error.
     ///
@@ -798,6 +843,46 @@ impl<T> Receiver<T> {
     /// ```
     pub fn set_overflow(&mut self, overflow: bool) {
         self.inner.write().overflow = overflow;
+    }
+
+    /// If sender will wait for active receivers.
+    ///
+    /// If set to `false`, [`Send`] will resolve immediately with a [`SendError`]. Defaults to
+    /// `true`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use async_broadcast::broadcast;
+    ///
+    /// let (_, r) = broadcast::<i32>(5);
+    /// assert!(r.await_active());
+    /// ```
+    pub fn await_active(&self) -> bool {
+        self.inner.read().await_active
+    }
+
+    /// Specify if sender will wait for active receivers.
+    ///
+    /// If set to `false`, [`Send`] will resolve immediately with a [`SendError`]. Defaults to
+    /// `true`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # futures_lite::future::block_on(async {
+    /// use async_broadcast::broadcast;
+    ///
+    /// let (s, mut r) = broadcast::<i32>(2);
+    /// s.broadcast(1).await.unwrap();
+    ///
+    /// r.set_await_active(false);
+    /// let _ = r.deactivate();
+    /// assert!(s.broadcast(2).await.is_err());
+    /// # });
+    /// ```
+    pub fn set_await_active(&mut self, await_active: bool) {
+        self.inner.write().await_active = await_active;
     }
 
     /// Closes the channel.
@@ -1260,7 +1345,8 @@ impl<T: Clone> futures_core::stream::FusedStream for Receiver<T> {
 
 /// An error returned from [`Sender::broadcast()`].
 ///
-/// Received because the channel is closed.
+/// Received because the channel is closed or no active receivers were present while `await-active`
+/// was set to `false` (See [`Sender::set_await_active`] for details).
 #[derive(PartialEq, Eq, Clone, Copy)]
 pub struct SendError<T>(pub T);
 
@@ -1455,11 +1541,12 @@ impl<'a, T: Clone> Future for Send<'a, T> {
 
         loop {
             let msg = this.msg.take().unwrap();
+            let inner = &this.sender.inner;
 
             // Attempt to send a message.
             match this.sender.try_broadcast(msg) {
                 Ok(msg) => {
-                    let inner = this.sender.inner.write();
+                    let inner = inner.write();
 
                     if inner.queue.len() < inner.capacity {
                         // Not full still, so notify the next awaiting sender.
@@ -1469,14 +1556,16 @@ impl<'a, T: Clone> Future for Send<'a, T> {
                     return Poll::Ready(Ok(msg));
                 }
                 Err(TrySendError::Closed(msg)) => return Poll::Ready(Err(SendError(msg))),
-                Err(TrySendError::Full(m)) | Err(TrySendError::Inactive(m)) => this.msg = Some(m),
+                Err(TrySendError::Full(m)) => this.msg = Some(m),
+                Err(TrySendError::Inactive(m)) if inner.read().await_active => this.msg = Some(m),
+                Err(TrySendError::Inactive(m)) => return Poll::Ready(Err(SendError(m))),
             }
 
             // Sending failed - now start listening for notifications or wait for one.
             match &mut this.listener {
                 None => {
                     // Start listening and then try sending again.
-                    let inner = this.sender.inner.write();
+                    let inner = inner.write();
                     this.listener = Some(inner.send_ops.listen());
                 }
                 Some(l) => {
@@ -1631,6 +1720,47 @@ impl<T> InactiveReceiver<T> {
     /// See [`Receiver::set_overflow`] documentation for examples.
     pub fn set_overflow(&mut self, overflow: bool) {
         self.inner.write().overflow = overflow;
+    }
+
+    /// If sender will wait for active receivers.
+    ///
+    /// If set to `false`, [`Send`] will resolve immediately with a [`SendError`]. Defaults to
+    /// `true`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use async_broadcast::broadcast;
+    ///
+    /// let (_, r) = broadcast::<i32>(5);
+    /// let r = r.deactivate();
+    /// assert!(r.await_active());
+    /// ```
+    pub fn await_active(&self) -> bool {
+        self.inner.read().await_active
+    }
+
+    /// Specify if sender will wait for active receivers.
+    ///
+    /// If set to `false`, [`Send`] will resolve immediately with a [`SendError`]. Defaults to
+    /// `true`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # futures_lite::future::block_on(async {
+    /// use async_broadcast::broadcast;
+    ///
+    /// let (s, r) = broadcast::<i32>(2);
+    /// s.broadcast(1).await.unwrap();
+    ///
+    /// let mut r = r.deactivate();
+    /// r.set_await_active(false);
+    /// assert!(s.broadcast(2).await.is_err());
+    /// # });
+    /// ```
+    pub fn set_await_active(&mut self, await_active: bool) {
+        self.inner.write().await_active = await_active;
     }
 
     /// Closes the channel.
