@@ -1,3 +1,7 @@
+# Version 0.5.0
+
+- API to disable waiting for active receivers (#35).
+
 # Version 0.4.1
 
 - Drop unneeded easy-parallel dep.
