@@ -1,3 +1,7 @@
+# Version 0.5.1
+
+-  Drop `parking_lot` dependency, in favor of sync primitives in std.
+
 # Version 0.5.0
 
 - API to disable waiting for active receivers (#35).
