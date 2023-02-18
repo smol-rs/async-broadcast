@@ -12,7 +12,7 @@ categories = []
 authors = [
     "Stjepan Glavina <stjepang@gmail.com>",
     "Yoshua Wuyts <yoshuawuyts@gmail.com>",
-    "Zeeshan Ali <zeeshanak@gnome.org>",
+    "Zeeshan Ali Khan <zeeshanak@gnome.org>",
 ]
 
 [[bench]]
