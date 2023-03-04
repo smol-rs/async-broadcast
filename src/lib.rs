@@ -105,6 +105,7 @@ use std::convert::TryInto;
 use std::error;
 use std::fmt;
 use std::future::Future;
+use std::marker::PhantomData;
 use std::pin::Pin;
 use std::sync::{Arc, RwLock};
 use std::task::{Context, Poll};
@@ -656,11 +657,12 @@ impl<T: Clone> Sender<T> {
     /// assert_eq!(s.broadcast(2).await, Err(SendError(2)));
     /// # });
     /// ```
-    pub fn broadcast(&self, msg: T) -> Send<'_, T> {
+    pub fn broadcast(&self, msg: T) -> Send<'static, T> {
         Send {
-            sender: self,
+            sender: self.clone(),
             listener: None,
             msg: Some(msg),
+            phantom: PhantomData,
         }
     }
 
@@ -1526,9 +1528,10 @@ impl fmt::Display for TryRecvError {
 #[derive(Debug)]
 #[must_use = "futures do nothing unless .awaited"]
 pub struct Send<'a, T> {
-    sender: &'a Sender<T>,
+    sender: Sender<T>,
     listener: Option<EventListener>,
     msg: Option<T>,
+    phantom: PhantomData<&'a ()>,
 }
 
 impl<'a, T> Unpin for Send<'a, T> {}
@@ -1541,7 +1544,7 @@ impl<'a, T: Clone> Future for Send<'a, T> {
 
         loop {
             let msg = this.msg.take().unwrap();
-            let inner = &this.sender.inner;
+            let inner = this.sender.inner.clone();
 
             // Attempt to send a message.
             match this.sender.try_broadcast(msg) {

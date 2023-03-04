@@ -288,3 +288,14 @@ fn inactive_drop() {
 
     assert!(s.is_closed())
 }
+
+#[test]
+#[ignore]
+fn keep_sender_and_send() {
+    // Compile-only test to ensure `Sender` and `Send` can be kept in the same place w/o running
+    // into self-reference issues.
+    let (s, _) = broadcast::<()>(1);
+
+    let f = s.broadcast(());
+    let _both = (s, f);
+}
