@@ -1,3 +1,8 @@
+# Version 0.6.0
+
+- Bump to event-listener v3.0.0.
+- Add smol-rs logo to docs.
+
 # Version 0.5.1
 
 -  Drop `parking_lot` dependency, in favor of sync primitives in std.
