@@ -1593,6 +1593,7 @@ easy_wrapper! {
     #[derive(Debug)]
     #[must_use = "futures do nothing unless .awaited"]
     pub struct Send<'a, T: Clone>(SendInner<'a, T> => Result<Option<T>, SendError<T>>);
+    #[cfg(not(target_family = "wasm"))]
     pub(crate) wait();
 }
 
@@ -1610,7 +1611,7 @@ impl<'a, T: Clone> EventListenerFuture for SendInner<'a, T> {
     type Output = Result<Option<T>, SendError<T>>;
 
     fn poll_with_strategy<'x, S: event_listener_strategy::Strategy<'x>>(
-        self: Pin<&'x mut Self>,
+        self: Pin<&mut Self>,
         strategy: &mut S,
         context: &mut S::Context,
     ) -> Poll<Self::Output> {
@@ -1662,6 +1663,7 @@ easy_wrapper! {
     #[derive(Debug)]
     #[must_use = "futures do nothing unless .awaited"]
     pub struct Recv<'a, T: Clone>(RecvInner<'a, T> => Result<T, RecvError>);
+    #[cfg(not(target_family = "wasm"))]
     pub(crate) wait();
 }
 
@@ -1677,7 +1679,7 @@ impl<'a, T: Clone> EventListenerFuture for RecvInner<'a, T> {
     type Output = Result<T, RecvError>;
 
     fn poll_with_strategy<'x, S: event_listener_strategy::Strategy<'x>>(
-        self: Pin<&'x mut Self>,
+        self: Pin<&mut Self>,
         strategy: &mut S,
         context: &mut S::Context,
     ) -> Poll<Self::Output> {
