@@ -785,7 +785,7 @@ pub struct Receiver<T> {
     pos: u64,
 
     /// Listens for a send or close event to unblock this stream.
-    listener: Option<Pin<Box<EventListener>>>,
+    listener: Option<EventListener>,
 }
 
 impl<T> Receiver<T> {
@@ -1599,8 +1599,7 @@ easy_wrapper! {
 #[derive(Debug)]
 struct SendInner<'a, T> {
     sender: &'a Sender<T>,
-    // TODO: Remove the Pin<Box<>> at the next breaking release and make this type !Unpin
-    listener: Option<Pin<Box<EventListener>>>,
+    listener: Option<EventListener>,
     msg: Option<T>,
 }
 
@@ -1610,7 +1609,7 @@ impl<'a, T: Clone> EventListenerFuture for SendInner<'a, T> {
     type Output = Result<Option<T>, SendError<T>>;
 
     fn poll_with_strategy<'x, S: event_listener_strategy::Strategy<'x>>(
-        self: Pin<&'x mut Self>,
+        self: Pin<&mut Self>,
         strategy: &mut S,
         context: &mut S::Context,
     ) -> Poll<Self::Output> {
@@ -1641,17 +1640,14 @@ impl<'a, T: Clone> EventListenerFuture for SendInner<'a, T> {
             }
 
             // Sending failed - now start listening for notifications or wait for one.
-            match &mut this.listener {
-                None => {
-                    // Start listening and then try sending again.
-                    let inner = inner.write().unwrap();
-                    this.listener = Some(inner.send_ops.listen());
-                }
-                Some(l) => {
-                    // Wait for a notification.
-                    ready!(strategy.poll(l.as_mut(), context));
-                    this.listener = None;
-                }
+            if this.listener.is_none() {
+                // Start listening and then try sending again.
+                let inner = inner.write().unwrap();
+                this.listener = Some(inner.send_ops.listen());
+            } else {
+                // Wait for a notification.
+                ready!(strategy.poll(&mut this.listener, context));
+                this.listener = None;
             }
         }
     }
@@ -1668,7 +1664,7 @@ easy_wrapper! {
 #[derive(Debug)]
 struct RecvInner<'a, T> {
     receiver: &'a mut Receiver<T>,
-    listener: Option<Pin<Box<EventListener>>>,
+    listener: Option<EventListener>,
 }
 
 impl<'a, T> Unpin for RecvInner<'a, T> {}
@@ -1677,7 +1673,7 @@ impl<'a, T: Clone> EventListenerFuture for RecvInner<'a, T> {
     type Output = Result<T, RecvError>;
 
     fn poll_with_strategy<'x, S: event_listener_strategy::Strategy<'x>>(
-        self: Pin<&'x mut Self>,
+        self: Pin<&mut Self>,
         strategy: &mut S,
         context: &mut S::Context,
     ) -> Poll<Self::Output> {
@@ -1695,19 +1691,16 @@ impl<'a, T: Clone> EventListenerFuture for RecvInner<'a, T> {
             }
 
             // Receiving failed - now start listening for notifications or wait for one.
-            match &mut this.listener {
-                None => {
-                    // Start listening and then try receiving again.
-                    this.listener = {
-                        let inner = this.receiver.inner.write().unwrap();
-                        Some(inner.recv_ops.listen())
-                    };
-                }
-                Some(l) => {
-                    // Wait for a notification.
-                    ready!(strategy.poll(l.as_mut(), context));
-                    this.listener = None;
-                }
+            if this.listener.is_none() {
+                // Start listening and then try receiving again.
+                this.listener = {
+                    let inner = this.receiver.inner.write().unwrap();
+                    Some(inner.recv_ops.listen())
+                };
+            } else {
+                // Wait for a notification.
+                ready!(strategy.poll(&mut this.listener, context));
+                this.listener = None;
             }
         }
     }
