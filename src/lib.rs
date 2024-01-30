@@ -1610,7 +1610,7 @@ impl<'a, T: Clone> EventListenerFuture for SendInner<'a, T> {
     type Output = Result<Option<T>, SendError<T>>;
 
     fn poll_with_strategy<'x, S: event_listener_strategy::Strategy<'x>>(
-        self: Pin<&'x mut Self>,
+        self: Pin<&mut Self>,
         strategy: &mut S,
         context: &mut S::Context,
     ) -> Poll<Self::Output> {
@@ -1677,7 +1677,7 @@ impl<'a, T: Clone> EventListenerFuture for RecvInner<'a, T> {
     type Output = Result<T, RecvError>;
 
     fn poll_with_strategy<'x, S: event_listener_strategy::Strategy<'x>>(
-        self: Pin<&'x mut Self>,
+        self: Pin<&mut Self>,
         strategy: &mut S,
         context: &mut S::Context,
     ) -> Poll<Self::Output> {

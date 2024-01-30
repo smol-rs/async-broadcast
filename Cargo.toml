@@ -22,8 +22,8 @@ name = "broadcast_bench"
 [features]
 
 [dependencies]
-event-listener = "3"
-event-listener-strategy = "0.1.0"
+event-listener = "4"
+event-listener-strategy = "0.4.0"
 futures-core = "0.3.21"
 
 [dev-dependencies]
