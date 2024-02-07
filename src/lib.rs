@@ -1640,14 +1640,17 @@ impl<'a, T: Clone> EventListenerFuture for SendInner<'a, T> {
             }
 
             // Sending failed - now start listening for notifications or wait for one.
-            if this.listener.is_none() {
-                // Start listening and then try sending again.
-                let inner = inner.write().unwrap();
-                this.listener = Some(inner.send_ops.listen());
-            } else {
-                // Wait for a notification.
-                ready!(strategy.poll(&mut this.listener, context));
-                this.listener = None;
+            match &this.listener {
+                None => {
+                    // Start listening and then try sending again.
+                    let inner = inner.write().unwrap();
+                    this.listener = Some(inner.send_ops.listen());
+                }
+                Some(_) => {
+                    // Wait for a notification.
+                    ready!(strategy.poll(&mut this.listener, context));
+                    this.listener = None;
+                }
             }
         }
     }
@@ -1691,16 +1694,19 @@ impl<'a, T: Clone> EventListenerFuture for RecvInner<'a, T> {
             }
 
             // Receiving failed - now start listening for notifications or wait for one.
-            if this.listener.is_none() {
-                // Start listening and then try receiving again.
-                this.listener = {
-                    let inner = this.receiver.inner.write().unwrap();
-                    Some(inner.recv_ops.listen())
-                };
-            } else {
-                // Wait for a notification.
-                ready!(strategy.poll(&mut this.listener, context));
-                this.listener = None;
+            match &this.listener {
+                None => {
+                    // Start listening and then try receiving again.
+                    this.listener = {
+                        let inner = this.receiver.inner.write().unwrap();
+                        Some(inner.recv_ops.listen())
+                    };
+                }
+                Some(_) => {
+                    // Wait for a notification.
+                    ready!(strategy.poll(&mut this.listener, context));
+                    this.listener = None;
+                }
             }
         }
     }
