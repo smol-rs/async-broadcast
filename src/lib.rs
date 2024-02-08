@@ -697,7 +697,7 @@ impl<T: Clone> Sender<T> {
             sender: self,
             listener: None,
             msg: Some(msg),
-            _pin: PhantomPinned
+            _pin: PhantomPinned,
         })
     }
 
@@ -1188,7 +1188,7 @@ impl<T: Clone> Receiver<T> {
         Recv::_new(RecvInner {
             receiver: self,
             listener: None,
-            _pin: PhantomPinned
+            _pin: PhantomPinned,
         })
     }
 
