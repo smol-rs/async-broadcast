@@ -1,3 +1,8 @@
+# Version 0.7.0
+
+- **Breaking:** `Recv` and `Send` are now `!Unpin` to allow for future optimizations.
+- Port to event-listener v5.0.
+
 # Version 0.6.0
 
 - Bump to event-listener v3.0.0.
