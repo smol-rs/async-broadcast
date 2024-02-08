@@ -111,6 +111,7 @@ use std::convert::TryInto;
 use std::error;
 use std::fmt;
 use std::future::Future;
+use std::marker::PhantomPinned;
 use std::pin::Pin;
 use std::sync::{Arc, RwLock};
 use std::task::{Context, Poll};
@@ -118,6 +119,7 @@ use std::task::{Context, Poll};
 use event_listener::{Event, EventListener};
 use event_listener_strategy::{easy_wrapper, EventListenerFuture};
 use futures_core::{ready, stream::Stream};
+use pin_project_lite::pin_project;
 
 /// Create a new broadcast channel.
 ///
@@ -695,6 +697,7 @@ impl<T: Clone> Sender<T> {
             sender: self,
             listener: None,
             msg: Some(msg),
+            _pin: PhantomPinned
         })
     }
 
@@ -1185,6 +1188,7 @@ impl<T: Clone> Receiver<T> {
         Recv::_new(RecvInner {
             receiver: self,
             listener: None,
+            _pin: PhantomPinned
         })
     }
 
@@ -1596,14 +1600,18 @@ easy_wrapper! {
     pub(crate) wait();
 }
 
-#[derive(Debug)]
-struct SendInner<'a, T> {
-    sender: &'a Sender<T>,
-    listener: Option<EventListener>,
-    msg: Option<T>,
-}
+pin_project! {
+    #[derive(Debug)]
+    struct SendInner<'a, T> {
+        sender: &'a Sender<T>,
+        listener: Option<EventListener>,
+        msg: Option<T>,
 
-impl<'a, T> Unpin for SendInner<'a, T> {}
+        // Keeping this type `!Unpin` enables future optimizations.
+        #[pin]
+        _pin: PhantomPinned
+    }
+}
 
 impl<'a, T: Clone> EventListenerFuture for SendInner<'a, T> {
     type Output = Result<Option<T>, SendError<T>>;
@@ -1613,7 +1621,7 @@ impl<'a, T: Clone> EventListenerFuture for SendInner<'a, T> {
         strategy: &mut S,
         context: &mut S::Context,
     ) -> Poll<Self::Output> {
-        let mut this = Pin::new(self);
+        let this = self.project();
 
         loop {
             let msg = this.msg.take().unwrap();
@@ -1632,9 +1640,9 @@ impl<'a, T: Clone> EventListenerFuture for SendInner<'a, T> {
                     return Poll::Ready(Ok(msg));
                 }
                 Err(TrySendError::Closed(msg)) => return Poll::Ready(Err(SendError(msg))),
-                Err(TrySendError::Full(m)) => this.msg = Some(m),
+                Err(TrySendError::Full(m)) => *this.msg = Some(m),
                 Err(TrySendError::Inactive(m)) if inner.read().unwrap().await_active => {
-                    this.msg = Some(m)
+                    *this.msg = Some(m)
                 }
                 Err(TrySendError::Inactive(m)) => return Poll::Ready(Err(SendError(m))),
             }
@@ -1644,12 +1652,12 @@ impl<'a, T: Clone> EventListenerFuture for SendInner<'a, T> {
                 None => {
                     // Start listening and then try sending again.
                     let inner = inner.write().unwrap();
-                    this.listener = Some(inner.send_ops.listen());
+                    *this.listener = Some(inner.send_ops.listen());
                 }
                 Some(_) => {
                     // Wait for a notification.
-                    ready!(strategy.poll(&mut this.listener, context));
-                    this.listener = None;
+                    ready!(strategy.poll(this.listener, context));
+                    *this.listener = None;
                 }
             }
         }
@@ -1664,13 +1672,17 @@ easy_wrapper! {
     pub(crate) wait();
 }
 
-#[derive(Debug)]
-struct RecvInner<'a, T> {
-    receiver: &'a mut Receiver<T>,
-    listener: Option<EventListener>,
-}
+pin_project! {
+    #[derive(Debug)]
+    struct RecvInner<'a, T> {
+        receiver: &'a mut Receiver<T>,
+        listener: Option<EventListener>,
 
-impl<'a, T> Unpin for RecvInner<'a, T> {}
+        // Keeping this type `!Unpin` enables future optimizations.
+        #[pin]
+        _pin: PhantomPinned
+    }
+}
 
 impl<'a, T: Clone> EventListenerFuture for RecvInner<'a, T> {
     type Output = Result<T, RecvError>;
@@ -1680,7 +1692,7 @@ impl<'a, T: Clone> EventListenerFuture for RecvInner<'a, T> {
         strategy: &mut S,
         context: &mut S::Context,
     ) -> Poll<Self::Output> {
-        let mut this = Pin::new(self);
+        let this = self.project();
 
         loop {
             // Attempt to receive a message.
@@ -1697,15 +1709,15 @@ impl<'a, T: Clone> EventListenerFuture for RecvInner<'a, T> {
             match &this.listener {
                 None => {
                     // Start listening and then try receiving again.
-                    this.listener = {
+                    *this.listener = {
                         let inner = this.receiver.inner.write().unwrap();
                         Some(inner.recv_ops.listen())
                     };
                 }
                 Some(_) => {
                     // Wait for a notification.
-                    ready!(strategy.poll(&mut this.listener, context));
-                    this.listener = None;
+                    ready!(strategy.poll(this.listener, context));
+                    *this.listener = None;
                 }
             }
         }
