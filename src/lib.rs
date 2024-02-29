@@ -1299,16 +1299,32 @@ impl<T: Clone> Receiver<T> {
         }
     }
 
-    /// A low level poll method that returns items of the same format handed back by
-    /// [`Receiver::recv()`] and [`Receiver::recv_direct()`]. This can be useful for building
-    /// stream implementations which use a [`Receiver`] under the hood and want to know if the
-    /// stream has overflowed.
+    /// A low level poll method that is similar to [`Receiver::recv()`] or
+    /// [`Receiver::recv_direct()`], and can be useful for building stream implementations which
+    /// use a [`Receiver`] under the hood and want to know if the stream has overflowed.
     ///
     /// Prefer to use [`Receiver::recv()`] or [`Receiver::recv_direct()`] when otherwise possible.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use futures_core::Stream;
+    /// use async_broadcast::{Receiver, OverflowError};
+    /// use std::{pin::Pin, task::{Poll, Context}};
+    ///
+    /// struct MyStream(Receiver<i32>);
+    ///
+    /// impl futures_core::Stream for MyStream {
+    ///     type Item = Result<i32, OverflowError>;
+    ///     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+    ///         Pin::new(&mut self.0).poll_recv(cx)
+    ///     }
+    /// }
+    /// ```
     pub fn poll_recv(
         mut self: Pin<&mut Self>,
         cx: &mut Context<'_>,
-    ) -> Poll<Option<Result<T, RecvError>>> {
+    ) -> Poll<Option<Result<T, OverflowError>>> {
         loop {
             // If this stream is listening for events, first wait for a notification.
             if let Some(listener) = self.listener.as_mut() {
@@ -1332,7 +1348,7 @@ impl<T: Clone> Receiver<T> {
                     Err(TryRecvError::Overflowed(n)) => {
                         // The stream is not blocked on an event - drop the listener.
                         self.listener = None;
-                        return Poll::Ready(Some(Err(RecvError::Overflowed(n))));
+                        return Poll::Ready(Some(Err(OverflowError(n))));
                     }
                     Err(TryRecvError::Empty) => {}
                 }
@@ -1421,10 +1437,9 @@ impl<T: Clone> Stream for Receiver<T> {
         loop {
             match ready!(self.as_mut().poll_recv(cx)) {
                 Some(Ok(val)) => return Poll::Ready(Some(val)),
-                // RecvError::Closed is handled upstream, so shouldn't be seen here.
-                None | Some(Err(RecvError::Closed)) => return Poll::Ready(None),
                 // If overflowed, we expect future operations to succeed so try again.
-                Some(Err(RecvError::Overflowed(_))) => continue,
+                Some(Err(OverflowError(_))) => continue,
+                None => return Poll::Ready(None),
             }
         }
     }
@@ -1557,6 +1572,18 @@ impl fmt::Display for RecvError {
             Self::Overflowed(n) => write!(f, "receiving skipped {} messages", n),
             Self::Closed => write!(f, "receiving from an empty and closed channel"),
         }
+    }
+}
+
+/// An error returned from [`Receiver::poll_recv()`].
+#[derive(PartialEq, Eq, Clone, Copy, Debug)]
+pub struct OverflowError(pub u64);
+
+impl error::Error for OverflowError {}
+
+impl fmt::Display for OverflowError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "receiving skipped {} messages", self.0)
     }
 }
 

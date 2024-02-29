@@ -297,7 +297,7 @@ fn poll_recv() {
     // A quick custom stream impl to demonstrate/test `poll_recv`.
     struct MyStream(Receiver<i32>);
     impl futures_core::Stream for MyStream {
-        type Item = Result<i32, RecvError>;
+        type Item = Result<i32, OverflowError>;
         fn poll_next(
             mut self: std::pin::Pin<&mut Self>,
             cx: &mut std::task::Context<'_>,
@@ -314,7 +314,7 @@ fn poll_recv() {
         s.broadcast(3).await.unwrap();
         s.broadcast(4).await.unwrap();
 
-        assert_eq!(stream.next().await.unwrap(), Err(RecvError::Overflowed(2)));
+        assert_eq!(stream.next().await.unwrap(), Err(OverflowError(2)));
         assert_eq!(stream.next().await.unwrap(), Ok(3));
         assert_eq!(stream.next().await.unwrap(), Ok(4));
 
