@@ -1303,6 +1303,9 @@ impl<T: Clone> Receiver<T> {
     /// [`Receiver::recv_direct()`], and can be useful for building stream implementations which
     /// use a [`Receiver`] under the hood and want to know if the stream has overflowed.
     ///
+    /// If the number of messages that have been sent has overflowed the channel capacity, an
+    /// [`OverflowError`] is returned containing the number of items that overflowed and were lost.
+    ///
     /// Prefer to use [`Receiver::recv()`] or [`Receiver::recv_direct()`] when otherwise possible.
     ///
     /// # Examples
