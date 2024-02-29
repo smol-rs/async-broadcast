@@ -1298,6 +1298,62 @@ impl<T: Clone> Receiver<T> {
             listener: None,
         }
     }
+
+    /// A low level poll function that returns items of the same format handed back by
+    /// [`Receiver::recv()`] and [`Receiver::recv_direct()`]. This can be useful for building
+    /// stream implementations which use a [`Receiver`] under the hood and want to know if the
+    /// stream has overflowed.
+    ///
+    /// Prefer to use [`Receiver::recv()`] or [`Receiver::recv_direct()`] when otherwise possible.
+    pub fn poll_recv(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+    ) -> Poll<Option<Result<T, RecvError>>> {
+        loop {
+            // If this stream is listening for events, first wait for a notification.
+            if let Some(listener) = self.listener.as_mut() {
+                ready!(Pin::new(listener).poll(cx));
+                self.listener = None;
+            }
+
+            loop {
+                // Attempt to receive a message.
+                match self.try_recv() {
+                    Ok(msg) => {
+                        // The stream is not blocked on an event - drop the listener.
+                        self.listener = None;
+                        return Poll::Ready(Some(Ok(msg)));
+                    }
+                    Err(TryRecvError::Closed) => {
+                        // The stream is not blocked on an event - drop the listener.
+                        self.listener = None;
+                        return Poll::Ready(None);
+                    }
+                    Err(TryRecvError::Overflowed(n)) => {
+                        // The stream is not blocked on an event - drop the listener.
+                        self.listener = None;
+                        return Poll::Ready(Some(Err(RecvError::Overflowed(n))));
+                    }
+                    Err(TryRecvError::Empty) => {}
+                }
+
+                // Receiving failed - now start listening for notifications or wait for one.
+                match self.listener.as_mut() {
+                    None => {
+                        // Start listening and then try receiving again.
+                        self.listener = {
+                            let inner = self.inner.write().unwrap();
+                            Some(inner.recv_ops.listen())
+                        };
+                    }
+                    Some(_) => {
+                        // Go back to the outer loop to poll the listener.
+                        break;
+                    }
+                }
+            }
+        }
+    }
 }
 
 impl<T> Drop for Receiver<T> {
@@ -1363,43 +1419,12 @@ impl<T: Clone> Stream for Receiver<T> {
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         loop {
-            // If this stream is listening for events, first wait for a notification.
-            if let Some(listener) = self.listener.as_mut() {
-                ready!(Pin::new(listener).poll(cx));
-                self.listener = None;
-            }
-
-            loop {
-                // Attempt to receive a message.
-                match self.try_recv() {
-                    Ok(msg) => {
-                        // The stream is not blocked on an event - drop the listener.
-                        self.listener = None;
-                        return Poll::Ready(Some(msg));
-                    }
-                    Err(TryRecvError::Closed) => {
-                        // The stream is not blocked on an event - drop the listener.
-                        self.listener = None;
-                        return Poll::Ready(None);
-                    }
-                    Err(TryRecvError::Overflowed(_)) => continue,
-                    Err(TryRecvError::Empty) => {}
-                }
-
-                // Receiving failed - now start listening for notifications or wait for one.
-                match self.listener.as_mut() {
-                    None => {
-                        // Start listening and then try receiving again.
-                        self.listener = {
-                            let inner = self.inner.write().unwrap();
-                            Some(inner.recv_ops.listen())
-                        };
-                    }
-                    Some(_) => {
-                        // Go back to the outer loop to poll the listener.
-                        break;
-                    }
-                }
+            match ready!(self.as_mut().poll_recv(cx)) {
+                Some(Ok(val)) => return Poll::Ready(Some(val)),
+                // RecvError::Closed is handled upstream, so shouldn't be seen here.
+                None | Some(Err(RecvError::Closed)) => return Poll::Ready(None),
+                // If overflowed, we expect future operations to succeed so try again.
+                Some(Err(RecvError::Overflowed(_))) => continue,
             }
         }
     }
