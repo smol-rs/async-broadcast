@@ -288,3 +288,38 @@ fn inactive_drop() {
 
     assert!(s.is_closed())
 }
+
+#[test]
+fn poll_recv() {
+    let (s, mut r) = broadcast::<i32>(2);
+    r.set_overflow(true);
+
+    // A quick custom stream impl to demonstrate/test `poll_recv`.
+    struct MyStream(Receiver<i32>);
+    impl futures_core::Stream for MyStream {
+        type Item = Result<i32, RecvError>;
+        fn poll_next(
+            mut self: std::pin::Pin<&mut Self>,
+            cx: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<Option<Self::Item>> {
+            std::pin::Pin::new(&mut self.0).poll_recv(cx)
+        }
+    }
+
+    block_on(async move {
+        let mut stream = MyStream(r);
+
+        s.broadcast(1).await.unwrap();
+        s.broadcast(2).await.unwrap();
+        s.broadcast(3).await.unwrap();
+        s.broadcast(4).await.unwrap();
+
+        assert_eq!(stream.next().await.unwrap(), Err(RecvError::Overflowed(2)));
+        assert_eq!(stream.next().await.unwrap(), Ok(3));
+        assert_eq!(stream.next().await.unwrap(), Ok(4));
+
+        drop(s);
+
+        assert_eq!(stream.next().await, None);
+    })
+}

@@ -1299,7 +1299,7 @@ impl<T: Clone> Receiver<T> {
         }
     }
 
-    /// A low level poll function that returns items of the same format handed back by
+    /// A low level poll method that returns items of the same format handed back by
     /// [`Receiver::recv()`] and [`Receiver::recv_direct()`]. This can be useful for building
     /// stream implementations which use a [`Receiver`] under the hood and want to know if the
     /// stream has overflowed.
