@@ -1314,7 +1314,9 @@ impl<T: Clone> Receiver<T> {
     /// # Examples
     ///
     /// This example shows how the [`Receiver::poll_recv`] method can be used to allow a custom
-    /// stream implementation to internally make use of a [`Receiver`].
+    /// stream implementation to internally make use of a [`Receiver`]. This example implementation
+    /// differs from the stream implementation of [`Receiver`] because it returns an error if
+    /// the channel capacity overflows, which the built in [`Receiver`] stream doesn't do.
     ///
     /// ```
     /// use futures_core::Stream;
