@@ -20,12 +20,16 @@ harness = false
 name = "broadcast_bench"
 
 [features]
+default = ["std"]
+std = ["event-listener/std", "event-listener-strategy/std"]
+
 
 [dependencies]
-event-listener = "5.0.0"
-event-listener-strategy = "0.5.0"
-futures-core = "0.3.21"
+event-listener = { version = "5.0.0", default-features = false }
+event-listener-strategy = { version = "0.5.0", default-features = false }
+futures-core = { version = "0.3.21", default-features = false }
 pin-project-lite = "0.2.13"
+spin = { version = "0.9.8" }
 
 [dev-dependencies]
 criterion = "0.3.5"
