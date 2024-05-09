@@ -102,6 +102,8 @@
     html_logo_url = "https://raw.githubusercontent.com/smol-rs/smol/master/assets/images/logo_fullsize_transparent.png"
 )]
 
+mod rwlock;
+
 #[cfg(doctest)]
 mod doctests {
     doc_comment::doctest!("../README.md");
@@ -122,10 +124,10 @@ use core::future::Future;
 use core::marker::PhantomPinned;
 use core::pin::Pin;
 use core::task::{Context, Poll};
-use spin::RwLock;
 #[cfg(feature = "std")]
 use std::error;
 
+use crate::rwlock::RwLock;
 use event_listener::{Event, EventListener};
 use event_listener_strategy::{easy_wrapper, EventListenerFuture};
 use futures_core::{ready, stream::Stream};
