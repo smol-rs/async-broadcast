@@ -123,10 +123,9 @@ use core::future::Future;
 use core::marker::PhantomPinned;
 use core::pin::Pin;
 use core::task::{Context, Poll};
+
 #[cfg(feature = "std")]
 use std::error;
-#[cfg(not(feature = "std"))]
-use alloc::boxed::Box;
 
 use crate::rwlock::RwLock;
 use event_listener::{Event, EventListener};
