@@ -114,7 +114,6 @@ extern crate alloc;
 #[cfg(feature = "std")]
 extern crate std;
 
-#[cfg(not(std))]
 use alloc::boxed::Box;
 use alloc::collections::VecDeque;
 use alloc::sync::Arc;
@@ -126,6 +125,8 @@ use core::pin::Pin;
 use core::task::{Context, Poll};
 #[cfg(feature = "std")]
 use std::error;
+#[cfg(not(feature = "std"))]
+use alloc::boxed::Box;
 
 use crate::rwlock::RwLock;
 use event_listener::{Event, EventListener};
