@@ -1,3 +1,8 @@
+# Version 0.7.1
+
+- Add a `poll_recv()` method to the `Receiver` type. This allows for `Receiver`
+  to be used in `poll`-based contexts. (#56)
+
 # Version 0.7.0
 
 - **Breaking:** `Recv` and `Send` are now `!Unpin` to allow for future optimizations.
