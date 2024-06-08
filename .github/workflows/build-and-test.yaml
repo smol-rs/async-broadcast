@@ -19,10 +19,13 @@ jobs:
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: ${{ matrix.rust }}
-          targets: x86_64-pc-windows-gnu
+          targets: x86_64-pc-windows-gnu, wasm32-unknown-unknown
 
       - name: Run cargo check
         run: cargo check --all --bins --examples --tests --all-features
+
+      - name: Run cargo check for WASM
+        run: cargo check --all --all-features --target wasm32-unknown-unknown
 
       - name: Run cargo check (without dev-dependencies to catch missing feature flags)
         if: startsWith(matrix.rust, 'nightly')
