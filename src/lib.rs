@@ -1649,6 +1649,7 @@ easy_wrapper! {
     #[derive(Debug)]
     #[must_use = "futures do nothing unless .awaited"]
     pub struct Send<'a, T: Clone>(SendInner<'a, T> => Result<Option<T>, SendError<T>>);
+    #[cfg(not(target_family = "wasm"))]
     pub(crate) wait();
 }
 
@@ -1721,6 +1722,7 @@ easy_wrapper! {
     #[derive(Debug)]
     #[must_use = "futures do nothing unless .awaited"]
     pub struct Recv<'a, T: Clone>(RecvInner<'a, T> => Result<T, RecvError>);
+    #[cfg(not(target_family = "wasm"))]
     pub(crate) wait();
 }
 
