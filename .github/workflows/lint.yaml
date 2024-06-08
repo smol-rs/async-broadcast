@@ -15,5 +15,7 @@ jobs:
         with:
           toolchain: stable
           components: rustfmt, clippy
+      - name: Check formatting
+        run: cargo fmt -- --check
       - name: Catch common mistakes and unwrap calls
         run: cargo --locked clippy --all-features -- -W clippy::all
