@@ -13,31 +13,20 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest]
-        rust: [nightly, beta, stable]
+        rust: [nightly, stable]
     steps:
       - uses: actions/checkout@v4
-
-      - name: Install latest ${{ matrix.rust }}
-        uses: actions-rs/toolchain@v1
+      - uses: dtolnay/rust-toolchain@master
         with:
-            toolchain: ${{ matrix.rust }}
-            profile: minimal
-            override: true
+          toolchain: ${{ matrix.rust }}
+          targets: x86_64-pc-windows-gnu
 
       - name: Run cargo check
-        uses: actions-rs/cargo@v1
-        with:
-          command: check
-          args: --all --bins --examples --tests --all-features
+        run: cargo check --all --bins --examples --tests --all-features
 
       - name: Run cargo check (without dev-dependencies to catch missing feature flags)
         if: startsWith(matrix.rust, 'nightly')
-        uses: actions-rs/cargo@v1
-        with:
-          command: check
-          args: -Z features=dev_dep
+        run: cargo check -Z features=dev_dep
 
       - name: Run cargo test
-        uses: actions-rs/cargo@v1
-        with:
-          command: test
+        run: cargo test
