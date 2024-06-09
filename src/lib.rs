@@ -101,6 +101,9 @@
     html_logo_url = "https://raw.githubusercontent.com/smol-rs/smol/master/assets/images/logo_fullsize_transparent.png"
 )]
 
+#[cfg(any(not(feature = "std"), not(feature = "alloc"),))]
+compile_error! { "async-broadcast requires the 'std' and 'alloc' features to be enabled" }
+
 #[cfg(doctest)]
 mod doctests {
     doc_comment::doctest!("../README.md");

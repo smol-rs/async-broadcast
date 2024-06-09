@@ -22,6 +22,9 @@ harness = false
 name = "broadcast_bench"
 
 [features]
+default = ["std"]
+alloc = []
+std = ["alloc"]
 
 [dependencies]
 event-listener = "5.0.0"
