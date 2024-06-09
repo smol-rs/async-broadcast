@@ -7,6 +7,7 @@ documentation = "https://docs.rs/async-broadcast"
 description = "Async broadcast channels"
 readme = "README.md"
 edition = "2021"
+rust-version = "1.60"
 keywords = []
 categories = []
 authors = [
