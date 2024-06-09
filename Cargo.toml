@@ -6,7 +6,7 @@ repository = "https://github.com/smol-rs/async-broadcast"
 documentation = "https://docs.rs/async-broadcast"
 description = "Async broadcast channels"
 readme = "README.md"
-edition = "2018"
+edition = "2021"
 keywords = []
 categories = []
 authors = [
@@ -14,6 +14,7 @@ authors = [
     "Yoshua Wuyts <yoshuawuyts@gmail.com>",
     "Zeeshan Ali Khan <zeeshanak@gnome.org>",
 ]
+
 
 [[bench]]
 harness = false
