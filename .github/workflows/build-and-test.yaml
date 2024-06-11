@@ -40,5 +40,7 @@ jobs:
       - uses: actions/checkout@v4
       - name: Install cargo-hack
         uses: taiki-e/install-action@cargo-hack
-      - run: cargo hack build --all --rust-version
-      - run: cargo hack build --all --no-default-features --rust-version
+      - name: Check MSRV Compatibility
+        run: |
+           cargo hack build --all --rust-version
+           cargo hack build --all --no-default-features --rust-version
