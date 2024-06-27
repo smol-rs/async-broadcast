@@ -752,6 +752,37 @@ impl<T: Clone> Sender<T> {
 
         Ok(ret)
     }
+
+    /// Broadcasts a message on the channel using the blocking strategy.
+    ///
+    /// If the channel is full, this method will block until there is room.
+    ///
+    /// If the channel is closed, this method returns an error.
+    ///
+    /// # Blocking
+    ///
+    /// Rather than using asynchronous waiting, like the [`send`](Self::broadcast) method,
+    /// this method will block the current thread until the message is sent.
+    ///
+    /// This method should not be used in an asynchronous context. It is intended
+    /// to be used such that a channel can be used in both asynchronous and synchronous contexts.
+    /// Calling this method in an asynchronous context may result in deadlocks.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use async_broadcast::{broadcast, SendError};
+    ///
+    /// let (s, r) = broadcast(1);
+    ///
+    /// assert_eq!(s.broadcast_blocking(1), Ok(None));
+    /// drop(r);
+    /// assert_eq!(s.broadcast_blocking(2), Err(SendError(2)));
+    /// ```
+    #[cfg(not(target_family = "wasm"))]
+    pub fn broadcast_blocking(&self, msg: T) -> Result<Option<T>, SendError<T>> {
+        self.broadcast_direct(msg).wait()
+    }
 }
 
 impl<T> Drop for Sender<T> {
@@ -1226,6 +1257,44 @@ impl<T: Clone> Receiver<T> {
             .unwrap()
             .try_recv_at(&mut self.pos)
             .map(|cow| cow.unwrap_or_else(T::clone))
+    }
+
+    /// Receives a message from the channel using the blocking strategy.
+    ///
+    /// If the channel is empty, this method will block until there is a message.
+    ///
+    /// If the channel is closed, this method receives a message or returns an error if there are
+    /// no more messages.
+    ///
+    /// If this receiver has missed a message (only possible if overflow mode is enabled), then
+    /// this method returns an error and readjusts its cursor to point to the first available
+    /// message.
+    ///
+    /// # Blocking
+    ///
+    /// Rather than using asynchronous waiting, like the [`recv`](Self::recv) method,
+    /// this method will block the current thread until the message is sent.
+    ///
+    /// This method should not be used in an asynchronous context. It is intended
+    /// to be used such that a channel can be used in both asynchronous and synchronous contexts.
+    /// Calling this method in an asynchronous context may result in deadlocks.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use async_broadcast::{broadcast, RecvError};
+    ///
+    /// let (s, mut r) = broadcast(1);
+    ///
+    /// assert_eq!(s.broadcast_blocking(1), Ok(None));
+    /// drop(s);
+    ///
+    /// assert_eq!(r.recv_blocking(), Ok(1));
+    /// assert_eq!(r.recv_blocking(), Err(RecvError::Closed));
+    /// ```
+    #[cfg(not(target_family = "wasm"))]
+    pub fn recv_blocking(&mut self) -> Result<T, RecvError> {
+        self.recv_direct().wait()
     }
 
     /// Produce a new Sender for this channel.

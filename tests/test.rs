@@ -45,6 +45,23 @@ fn basic_async() {
     });
 }
 
+#[cfg(not(target_family = "wasm"))]
+#[test]
+fn basic_blocking() {
+    let (s, mut r) = broadcast(1);
+
+    s.broadcast_blocking(7).unwrap();
+    assert_eq!(r.try_recv(), Ok(7));
+
+    s.broadcast_blocking(8).unwrap();
+    assert_eq!(block_on(r.recv()), Ok(8));
+
+    block_on(s.broadcast(9)).unwrap();
+    assert_eq!(r.recv_blocking(), Ok(9));
+
+    assert_eq!(r.try_recv(), Err(TryRecvError::Empty));
+}
+
 #[test]
 fn parallel() {
     let (s1, mut r1) = broadcast(2);
