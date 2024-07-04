@@ -12,14 +12,14 @@ fn ms(ms: u64) -> Duration {
 
 #[test]
 fn basic_sync() {
-    let (s, mut r1) = broadcast(10);
-    let mut r2 = r1.clone();
+    let (s, r1) = broadcast(10);
+    let r2 = r1.clone();
 
     s.try_broadcast(7).unwrap();
     assert_eq!(r1.try_recv().unwrap(), 7);
     assert_eq!(r2.try_recv().unwrap(), 7);
 
-    let mut r3 = r1.clone();
+    let r3 = r1.clone();
     s.try_broadcast(8).unwrap();
     assert_eq!(r1.try_recv().unwrap(), 8);
     assert_eq!(r2.try_recv().unwrap(), 8);
@@ -48,7 +48,7 @@ fn basic_async() {
 #[cfg(not(target_family = "wasm"))]
 #[test]
 fn basic_blocking() {
-    let (s, mut r) = broadcast(1);
+    let (s, r) = broadcast(1);
 
     s.broadcast_blocking(7).unwrap();
     assert_eq!(r.try_recv(), Ok(7));
@@ -64,9 +64,9 @@ fn basic_blocking() {
 
 #[test]
 fn parallel() {
-    let (s1, mut r1) = broadcast(2);
+    let (s1, r1) = broadcast(2);
     let s2 = s1.clone();
-    let mut r2 = r1.clone();
+    let r2 = r1.clone();
 
     let (sender_sync_send, sender_sync_recv) = mpsc::channel();
     let (receiver_sync_send, receiver_sync_recv) = mpsc::channel();
@@ -162,9 +162,9 @@ fn parallel_async() {
 #[test]
 fn channel_shrink() {
     let (s1, mut r1) = broadcast(4);
-    let mut r2 = r1.clone();
-    let mut r3 = r1.clone();
-    let mut r4 = r1.clone();
+    let r2 = r1.clone();
+    let r3 = r1.clone();
+    let r4 = r1.clone();
 
     s1.try_broadcast(1).unwrap();
     s1.try_broadcast(2).unwrap();
@@ -287,7 +287,7 @@ fn open_channel() {
                 sender_sync_send.send(()).unwrap();
                 receiver_sync_recv.recv().unwrap();
 
-                let mut r = inactive.activate();
+                let r = inactive.activate();
                 assert_eq!(r.recv().await.unwrap(), 9);
                 assert_eq!(r.recv().await.unwrap(), 10);
             })

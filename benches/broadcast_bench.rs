@@ -2,7 +2,7 @@ use async_broadcast::broadcast;
 use criterion::{criterion_group, criterion_main, Criterion};
 use futures_lite::future::block_on;
 pub fn broadcast_and_recv(c: &mut Criterion) {
-    let (s, mut r1) = broadcast(1);
+    let (s, r1) = broadcast(1);
 
     let mut n = 0;
     c.bench_function("1 -> 1", |b| {
@@ -15,7 +15,7 @@ pub fn broadcast_and_recv(c: &mut Criterion) {
         })
     });
 
-    let mut r2 = r1.clone();
+    let r2 = r1.clone();
 
     c.bench_function("1 -> 2", |b| {
         b.iter(|| {
@@ -28,8 +28,8 @@ pub fn broadcast_and_recv(c: &mut Criterion) {
         })
     });
 
-    let mut r3 = r1.clone();
-    let mut r4 = r1.clone();
+    let r3 = r1.clone();
+    let r4 = r1.clone();
 
     c.bench_function("1 -> 4", |b| {
         b.iter(|| {
@@ -44,10 +44,10 @@ pub fn broadcast_and_recv(c: &mut Criterion) {
         })
     });
 
-    let mut r5 = r1.clone();
-    let mut r6 = r1.clone();
-    let mut r7 = r1.clone();
-    let mut r8 = r1.clone();
+    let r5 = r1.clone();
+    let r6 = r1.clone();
+    let r7 = r1.clone();
+    let r8 = r1.clone();
 
     c.bench_function("1 -> 8", |b| {
         b.iter(|| {
