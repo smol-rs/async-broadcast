@@ -207,21 +207,21 @@ impl<T> Inner<T> {
     ///
     /// Result is used here instead of Cow because we don't have a Clone bound on T.
     fn try_recv_at(&mut self, pos: &AtomicU64) -> Result<Result<T, &T>, TryRecvError> {
-        let i = pos.load(Ordering::Acquire);
+        let i = pos.load(Ordering::Relaxed);
         let i = match i.checked_sub(self.head_pos) {
             Some(i) => i
                 .try_into()
                 .expect("Head position more than usize::MAX behind a receiver"),
             None => {
                 let count = self.head_pos - pos.load(Ordering::Relaxed);
-                pos.store(self.head_pos, Ordering::Release);
+                pos.store(self.head_pos, Ordering::Relaxed);
                 return Err(TryRecvError::Overflowed(count));
             }
         };
 
         let last_waiter;
         if let Some((_elt, waiters)) = self.queue.get_mut(i) {
-            pos.fetch_add(1, Ordering::Release);
+            pos.fetch_add(1, Ordering::Relaxed);
             *waiters -= 1;
             last_waiter = *waiters == 0;
         } else {
