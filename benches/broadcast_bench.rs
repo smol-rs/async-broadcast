@@ -65,6 +65,40 @@ pub fn broadcast_and_recv(c: &mut Criterion) {
             })
         })
     });
+
+    let r9 = r1.clone();
+    let r10 = r1.clone();
+    let r11 = r1.clone();
+    let r12 = r1.clone();
+    let r13 = r1.clone();
+    let r14 = r1.clone();
+    let r15 = r1.clone();
+    let r16 = r1.clone();
+
+    c.bench_function("1 -> 16", |b| {
+        b.iter(|| {
+            block_on(async {
+                s.broadcast(n).await.unwrap();
+                assert_eq!(r1.recv().await.unwrap(), n);
+                assert_eq!(r2.recv().await.unwrap(), n);
+                assert_eq!(r3.recv().await.unwrap(), n);
+                assert_eq!(r4.recv().await.unwrap(), n);
+                assert_eq!(r5.recv().await.unwrap(), n);
+                assert_eq!(r6.recv().await.unwrap(), n);
+                assert_eq!(r7.recv().await.unwrap(), n);
+                assert_eq!(r8.recv().await.unwrap(), n);
+                assert_eq!(r9.recv().await.unwrap(), n);
+                assert_eq!(r10.recv().await.unwrap(), n);
+                assert_eq!(r11.recv().await.unwrap(), n);
+                assert_eq!(r12.recv().await.unwrap(), n);
+                assert_eq!(r13.recv().await.unwrap(), n);
+                assert_eq!(r14.recv().await.unwrap(), n);
+                assert_eq!(r15.recv().await.unwrap(), n);
+                assert_eq!(r16.recv().await.unwrap(), n);
+                n += 1;
+            })
+        })
+    });
 }
 
 criterion_group!(benches, broadcast_and_recv);
