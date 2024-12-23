@@ -1,3 +1,9 @@
+# Version 0.7.2
+
+- Add `Sender::broadcast_blocking` and `Receiver::recv_blocking`. #41
+- Use `Mutex` instead of `RwLock` for securing the inner data. #42
+- Many non-user-facing internal improvements and fixes.
+
 # Version 0.7.1
 
 - Add a `poll_recv()` method to the `Receiver` type. This allows for `Receiver`
