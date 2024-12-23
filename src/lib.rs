@@ -1735,7 +1735,7 @@ pin_project! {
     }
 }
 
-impl<'a, T: Clone> EventListenerFuture for SendInner<'a, T> {
+impl<T: Clone> EventListenerFuture for SendInner<'_, T> {
     type Output = Result<Option<T>, SendError<T>>;
 
     fn poll_with_strategy<'x, S: event_listener_strategy::Strategy<'x>>(
@@ -1807,7 +1807,7 @@ pin_project! {
     }
 }
 
-impl<'a, T: Clone> EventListenerFuture for RecvInner<'a, T> {
+impl<T: Clone> EventListenerFuture for RecvInner<'_, T> {
     type Output = Result<T, RecvError>;
 
     fn poll_with_strategy<'x, S: event_listener_strategy::Strategy<'x>>(
