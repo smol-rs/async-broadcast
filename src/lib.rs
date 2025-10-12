@@ -8,9 +8,10 @@
 //! among multiple threads.
 //!
 //! When all `Sender`s or all `Receiver`s are dropped, the channel becomes closed. When a channel is
-//! closed, no more messages can be sent, but remaining messages can still be received.
-//!
-//! The channel can also be closed manually by calling [`Sender::close()`] or [`Receiver::close()`].
+//! closed, no more messages can be sent, but remaining messages can still be received. If a channel
+//! was auto-closed due to all receivers being dropped, calling [`Sender::new_receiver()`] will
+//! re-open it (assuming there are still senders). Channels that were manually closed via
+//! [`Sender::close()`] or [`Receiver::close()`] will not be re-opened.
 //!
 //! ## Examples
 //!
@@ -76,7 +77,7 @@
 //!     channel, `async_broadcast` is probably a better choice.
 //!
 //! * [`tokio::sync`]: Tokio's `sync` module provides a [broadcast channel][tbc] API. The differences
-//!    here are:
+//!   here are:
 //!   - While this implementation does provide [overflow mode][tom], it is the default behavior and not
 //!     opt-in.
 //!   - There is no equivalent of inactive receivers.
@@ -160,6 +161,7 @@ pub fn broadcast<T>(cap: usize) -> (Sender<T>, Receiver<T>) {
         sender_count: 1,
         head_pos: 0,
         is_closed: false,
+        is_manually_closed: false,
         send_ops: Event::new(),
         recv_ops: Event::new(),
     }));
@@ -191,6 +193,10 @@ struct Inner<T> {
     await_active: bool,
 
     is_closed: bool,
+    /// Track if the channel was manually closed via close() vs auto-closed when all receivers dropped.
+    /// This distinction allows new_receiver() to re-open an auto-closed channel, which is more
+    /// ergonomic and matches user expectations.
+    is_manually_closed: bool,
 
     /// Send operations waiting while the channel is full.
     send_ops: Event,
@@ -253,7 +259,16 @@ impl<T> Inner<T> {
     /// Closes the channel and notifies all waiting operations.
     ///
     /// Returns `true` if this call has closed the channel and it was not closed already.
-    fn close(&mut self) -> bool {
+    ///
+    /// The `manual` parameter distinguishes between explicit close() calls and automatic
+    /// close when all receivers are dropped. This allows new_receiver() to re-open an
+    /// auto-closed channel for better ergonomics.
+    fn close(&mut self, manual: bool) -> bool {
+        // If manual close, always record it even if already closed
+        if manual && !self.is_manually_closed {
+            self.is_manually_closed = true;
+        }
+
         if self.is_closed {
             return false;
         }
@@ -289,7 +304,7 @@ impl<T> Inner<T> {
     /// Close the channel if there aren't any receivers present anymore
     fn close_channel(&mut self) {
         if self.receiver_count == 0 && self.inactive_receiver_count == 0 {
-            self.close();
+            self.close(false); // Auto-close, not manual
         }
     }
 }
@@ -456,7 +471,7 @@ impl<T> Sender<T> {
     /// # });
     /// ```
     pub fn close(&self) -> bool {
-        self.inner.lock().unwrap().close()
+        self.inner.lock().unwrap().close(true) // Manual close
     }
 
     /// Returns `true` if the channel is closed.
@@ -602,8 +617,12 @@ impl<T> Sender<T> {
 
     /// Produce a new Receiver for this channel.
     ///
-    /// The new receiver starts with zero messages available.  This will not re-open the channel if
-    /// it was closed due to all receivers being dropped.
+    /// The new receiver starts with zero messages available. If the channel was automatically
+    /// closed due to all receivers being dropped (but there are still senders), creating a new
+    /// receiver will re-open the channel. This enables ergonomic patterns like creating channels
+    /// in setup functions and adding receivers later.
+    ///
+    /// Note: Channels that were manually closed via `close()` will not be re-opened.
     ///
     /// # Examples
     ///
@@ -630,6 +649,13 @@ impl<T> Sender<T> {
     /// ```
     pub fn new_receiver(&self) -> Receiver<T> {
         let mut inner = self.inner.lock().unwrap();
+
+        // If the channel was auto-closed (not manually) due to all receivers being dropped,
+        // but there are still senders, re-open it for better ergonomics.
+        if inner.is_closed && !inner.is_manually_closed && inner.sender_count > 0 {
+            inner.is_closed = false;
+        }
+
         inner.receiver_count += 1;
         Receiver {
             inner: self.inner.clone(),
@@ -792,7 +818,7 @@ impl<T> Drop for Sender<T> {
         inner.sender_count -= 1;
 
         if inner.sender_count == 0 {
-            inner.close();
+            inner.close(false); // Auto-close when all senders dropped
         }
     }
 }
@@ -973,7 +999,7 @@ impl<T> Receiver<T> {
     /// # });
     /// ```
     pub fn close(&self) -> bool {
-        self.inner.lock().unwrap().close()
+        self.inner.lock().unwrap().close(true) // Manual close
     }
 
     /// Returns `true` if the channel is closed.
@@ -1994,7 +2020,7 @@ impl<T> InactiveReceiver<T> {
     ///
     /// See [`Receiver::close`] documentation for examples.
     pub fn close(&self) -> bool {
-        self.inner.lock().unwrap().close()
+        self.inner.lock().unwrap().close(true) // Manual close
     }
 
     /// Returns `true` if the channel is closed.
