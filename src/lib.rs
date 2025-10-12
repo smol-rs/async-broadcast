@@ -8,9 +8,8 @@
 //! among multiple threads.
 //!
 //! When all `Sender`s or all `Receiver`s are dropped, the channel becomes closed. When a channel is
-//! closed, no more messages can be sent, but remaining messages can still be received.
-//!
-//! The channel can also be closed manually by calling [`Sender::close()`] or [`Receiver::close()`].
+//! closed, no more messages can be sent, but remaining messages can still be received. A closed
+//! channel can be re-opened by calling [`Sender::new_receiver()`] if senders still exist.
 //!
 //! ## Examples
 //!
@@ -76,7 +75,7 @@
 //!     channel, `async_broadcast` is probably a better choice.
 //!
 //! * [`tokio::sync`]: Tokio's `sync` module provides a [broadcast channel][tbc] API. The differences
-//!    here are:
+//!   here are:
 //!   - While this implementation does provide [overflow mode][tom], it is the default behavior and not
 //!     opt-in.
 //!   - There is no equivalent of inactive receivers.
@@ -602,8 +601,8 @@ impl<T> Sender<T> {
 
     /// Produce a new Receiver for this channel.
     ///
-    /// The new receiver starts with zero messages available.  This will not re-open the channel if
-    /// it was closed due to all receivers being dropped.
+    /// The new receiver starts with zero messages available. If the channel is closed but senders
+    /// still exist, creating a new receiver will re-open the channel.
     ///
     /// # Examples
     ///
@@ -630,6 +629,11 @@ impl<T> Sender<T> {
     /// ```
     pub fn new_receiver(&self) -> Receiver<T> {
         let mut inner = self.inner.lock().unwrap();
+
+        if inner.is_closed && inner.sender_count > 0 {
+            inner.is_closed = false;
+        }
+
         inner.receiver_count += 1;
         Receiver {
             inner: self.inner.clone(),

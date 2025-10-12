@@ -17,7 +17,8 @@ A channel has the `Sender` and `Receiver` side. Both sides are cloneable and can
 among multiple threads.
 
 When all `Sender`s or all `Receiver`s are dropped, the channel becomes closed. When a channel is
-closed, no more messages can be sent, but remaining messages can still be received.
+closed, no more messages can be sent, but remaining messages can still be received. A closed
+channel can be reopened by calling `Sender::new_receiver()` if senders still exist.
 
 The channel can also be closed manually by calling `Sender::close()` or
 `Receiver::close()`.
